@@ -36,6 +36,18 @@ Create an initial administrator using **Register** and the private key from `ser
 
 The production Express server serves both the built React app and `/api` from the same origin. This avoids configuring a separate frontend API URL.
 
+### Free Render web service
+
+The repository includes a Render Blueprint (`render.yaml`) for a free Node web service. Free services can sleep when idle and may take time to wake up.
+
+1. Push this repository to GitHub and sign in to Render with GitHub.
+2. Create a MongoDB Atlas M0 cluster and database user. Configure Atlas Network Access to allow the Render service's outbound IP addresses; do not use a public IP allow-all rule for real or sensitive data.
+3. In Render, choose **New → Blueprint**, select `sumanthlb74-afk/curasys-hms`, and deploy the Blueprint. Enter the Atlas connection string when prompted for `MONGODB_URI`; Render generates the JWT and admin registration secrets.
+4. Wait for the service deployment to finish, then visit the Render URL and `/api/health`. Confirm the response reports `"status":"ok"` and `"database":"connected"`.
+5. Register the initial administrator using the generated `ADMIN_REGISTRATION_KEY` from the Render service environment settings. Keep all secrets in the hosting dashboard, never in GitHub or chat.
+
+The live URL is assigned by Render after the Blueprint deploys. Do not enter real patient information; this educational project is not approved for clinical use.
+
 1. Provision MongoDB Atlas for a hosted deployment, create a database user, and allow connections from your hosting provider.
 2. Configure these environment variables in the hosting provider (do not commit `server/.env`):
    - `MONGODB_URI`: the Atlas connection string.
