@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import process from 'node:process';
 import test, { after, before } from 'node:test';
-import app from './index.js';
 import { isWithinClinicHours } from '../shared/clinic-hours.js';
+
+process.env.ADMIN_REGISTRATION_KEY = 'test-only-admin-registration-key';
+const { default: app } = await import('./index.js');
 
 let server;
 let baseUrl;
