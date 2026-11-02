@@ -16,6 +16,7 @@ import AuditLog from './models/AuditLog.js';
 import Bed from './models/Bed.js';
 import Billing from './models/Billing.js';
 import ClinicalNote from './models/ClinicalNote.js';
+import Counter from './models/Counter.js';
 import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
@@ -229,6 +230,19 @@ function validPassword(value) {
 function assignUhid() {
   const suffix = crypto.randomBytes(6).toString('hex').toUpperCase();
   return `CUR-${new Date().getFullYear()}-${suffix}`;
+}
+
+async function nextInvoiceNumber() {
+  const year = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: process.env.HOSPITAL_TZ || 'Asia/Kolkata',
+    year: 'numeric',
+  }).formatToParts(new Date()).map(({ type, value }) => [type, value])).year;
+  const counter = await Counter.findOneAndUpdate(
+    { name: `invoice-${year}` },
+    { $inc: { value: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true },
+  );
+  return `INV-${year}-${String(counter.value).padStart(6, '0')}`;
 }
 
 async function createUser({
@@ -993,9 +1007,31 @@ app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request
     createdBy: request.user.id,
     totalPaise,
     description: description.trim(),
+    invoiceNumber: await nextInvoiceNumber(),
   });
   await audit(request, { action: 'billing.issued', entityType: 'billing', entityId: bill._id, patientId });
   response.status(201).json({ bill });
+}));
+
+app.put('/api/billing/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(request.body?.status)) {
+    response.status(400).json({ error: 'Choose a valid bill and status.' });
+    return;
+  }
+  const bill = await Billing.findById(request.params.id);
+  if (!bill) {
+    response.status(404).json({ error: 'Bill not found.' });
+    return;
+  }
+  if (bill.status !== 'Unpaid') {
+    response.status(409).json({ error: 'Only unpaid bills can be marked paid or voided.' });
+    return;
+  }
+  bill.status = request.body.status;
+  bill.paidAt = request.body.status === 'Paid' ? new Date() : null;
+  await bill.save();
+  await audit(request, { action: `billing.${bill.status.toLowerCase()}`, entityType: 'billing', entityId: bill._id, patientId: bill.patientId });
+  response.json({ bill });
 }));
 
 app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {

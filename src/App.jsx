@@ -568,7 +568,7 @@ function PatientDashboard({ user, notify }) {
   ]);
   const appointments = data.appointments?.appointments || [];
   const bills = data.billing?.bills || [];
-  const totalBilledPaise = bills.reduce((total, bill) => total + bill.totalPaise, 0);
+  const totalBilledPaise = bills.reduce((total, bill) => total + (bill.status === 'Void' ? 0 : bill.totalPaise), 0);
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
@@ -600,7 +600,7 @@ function PatientDashboard({ user, notify }) {
         </Card>
       </div>
       <Card title="Your bills" icon={Receipt}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><span className="font-medium">Total billed</span><span className="text-lg font-bold text-teal-700 dark:text-teal-300">{formatCurrency(totalBilledPaise)}</span></div>{bills.length === 0 ? <Empty>No bills have been issued.</Empty> : bills.map((bill) => <article key={bill._id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div><p className="font-semibold">{bill.description}</p><p className="mt-1 text-xs text-slate-500">Issued by {bill.createdBy?.name || 'Hospital administration'} · {new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></article>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><span className="font-medium">Total billed (excluding void bills)</span><span className="text-lg font-bold text-teal-700 dark:text-teal-300">{formatCurrency(totalBilledPaise)}</span></div>{bills.length === 0 ? <Empty>No bills have been issued.</Empty> : bills.map((bill) => <article key={bill._id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div><p className="font-semibold">{bill.description}</p><p className="mt-1 text-xs text-slate-500">{bill.invoiceNumber || 'Legacy invoice'} · {bill.status || 'Unpaid'} · Issued by {bill.createdBy?.name || 'Hospital administration'} · {new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></article>)}</div>}
       </Card>
       <Card title="Doctor visit notes" icon={ClipboardList}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No visit notes have been added to your chart.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/60"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{note.assessment}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p>{note.historyOfPresentIllness && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">History:</span> {note.historyOfPresentIllness}</p>}{note.examination && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Examination:</span> {note.examination}</p>}<p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Care plan:</span> {note.plan}</p>{note.followUp && <p className="mt-2 text-xs text-teal-700 dark:text-teal-300"><span className="font-semibold">Follow-up:</span> {note.followUp}</p>}<p className="mt-3 text-xs text-slate-500">Dr. {note.doctorId?.name || 'Care team'}</p></article>)}</div>}
@@ -1039,6 +1039,13 @@ function AdminDashboard({ notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
+  const updateBillStatus = async (bill, status) => {
+    try {
+      await api.put(`/billing/${bill._id}`, { status });
+      notify(`Bill ${bill.invoiceNumber} marked ${status.toLowerCase()}.`);
+      refresh();
+    } catch (error) { notify(error.message, 'error'); }
+  };
   const updateBed = async (bed, status, patientId) => {
     try {
       const nextStatus = status ?? (patientId ? 'Occupied' : 'Available');
@@ -1155,7 +1162,7 @@ function AdminDashboard({ notify }) {
           </form>
         </Card>
         <Card title={`Issued bills · ${bills.length}`} icon={Receipt}>
-          {loading ? <p className="text-sm text-slate-500">Loading bills…</p> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{bills.map((bill) => <article key={bill._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold">{bill.patientId?.name} · {bill.patientId?.uhid}</p><p className="font-bold text-teal-700 dark:text-teal-300">{formatCurrency(bill.totalPaise)}</p></div><p className="mt-1">{bill.description}</p><p className="mt-1 text-xs text-slate-500">Issued {new Date(bill.createdAt).toLocaleString()}</p></article>)}</div>}
+          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{bills.map((bill) => <article key={bill._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold">{bill.patientId?.name} · {bill.patientId?.uhid}</p><p className="font-bold text-teal-700 dark:text-teal-300">{formatCurrency(bill.totalPaise)}</p></div><p className="mt-1">{bill.description}</p><p className="mt-1 text-xs text-slate-500">{bill.invoiceNumber || 'Legacy invoice'} · {bill.status || 'Unpaid'} · Issued {new Date(bill.createdAt).toLocaleString()}</p>{bill.status === 'Unpaid' && <div className="mt-2 flex gap-3 text-xs"><button type="button" onClick={() => updateBillStatus(bill, 'Paid')} className="font-semibold text-teal-700 underline dark:text-teal-300">Mark paid</button><button type="button" onClick={() => updateBillStatus(bill, 'Void')} className="font-semibold text-rose-700 underline dark:text-rose-300">Void bill</button></div>}</article>)}</div>}
         </Card>
       </div>
       <div className="grid gap-6 lg:grid-cols-2">

@@ -168,6 +168,11 @@ test('billing requires a patient, administrator, positive whole-paise amount, an
     description: 'Consultation and prescribed treatment',
   });
   assert.equal(await getValidationError(valid), null);
+  assert.equal(valid.status, 'Unpaid');
+  assert.equal(valid.paidAt, null);
+  const invoiceIndex = Billing.schema.indexes().find(([keys]) => keys.invoiceNumber === 1);
+  assert.ok(invoiceIndex);
+  assert.equal(invoiceIndex[1].unique, true);
   const invalid = await getValidationError(new Billing({
     patientId: '507f1f77bcf86cd799439011',
     createdBy: '507f1f77bcf86cd799439012',
