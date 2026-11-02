@@ -30,7 +30,7 @@ npm.cmd run dev
 
 Open the Vite local URL printed by the command (normally `http://localhost:5173/`). Leave the terminal open while using the app. Stop both services with `Ctrl+C`.
 
-Create the first administrator using **Initial admin setup** and the private key from `server/.env`. This setup closes after the first administrator is created. Administrators create doctor and medical staff accounts. Administrators, doctors, and medical staff can register patients. New staff, doctors, and patients must change their temporary password at first sign-in. Patients sign in with email and password; they do not choose an account type. No seeded demo login is available.
+Create the first administrator using **Administrator setup** and the private key from `server/.env`. This setup closes after the first administrator is created. A unique database index protects concurrent bootstrap attempts. If the key is missing on the API, setup returns a clear configuration error; a wrong key is rejected without revealing the configured value. Administrators create doctor and medical staff accounts. Administrators, doctors, and medical staff can register patients. New staff, doctors, and patients must change their temporary password at first sign-in. Patients sign in with email and password; they do not choose an account type. No seeded demo login is available.
 
 ## Build and deploy
 
@@ -48,6 +48,8 @@ The repository includes a Render Blueprint (`render.yaml`) for both free service
 4. Wait for both services to finish deploying. The frontend is `https://curasys-hms.onrender.com`; the API health endpoint is `https://curasys-hms-api.onrender.com/api/health`.
 5. Confirm the health endpoint returns HTTP 200 with `{"status":"ok"}`. If the database is disconnected, it returns HTTP 503 with `{"status":"degraded"}`.
 6. Open the frontend and register the initial administrator using `ADMIN_REGISTRATION_KEY` from the API service environment settings. Keep all secrets in the hosting dashboard, never in GitHub or chat.
+
+The API service needs `NODE_ENV=production`, `MONGODB_URI`, `JWT_SECRET` (at least 32 characters), `ADMIN_REGISTRATION_KEY`, and `CLIENT_ORIGIN=https://curasys-hms.onrender.com`. The Blueprint generates values for the two secrets. If the existing Render service has no `ADMIN_REGISTRATION_KEY`, add it under **curasys-hms-api → Environment**, save, and redeploy. Keep it only in the API environment; never put it in `VITE_*` variables or source code. To retrieve a generated key, reveal it in the API service's Environment page and enter it only in Administrator setup. The static service uses `VITE_API_BASE_URL=https://curasys-hms-api.onrender.com/api`. Render supplies `PORT`; clinic hours default to 08:00–20:00, and `HOSPITAL_TZ` defaults to `Asia/Kolkata`.
 
 The live URL is assigned by Render after the Blueprint deploys. Do not enter real patient information; this educational project is not approved for clinical use.
 
@@ -97,6 +99,20 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 
 Users are stored in the `User` collection. `Appointment`, `ClinicalNote`, `Prescription`, `Vital`, `Bed`, and `Billing` documents reference users by MongoDB ObjectId. Patient deactivation blocks sign-in but does not cascade-delete this history.
 
+## API permission summary
+
+| API area | Patient | Doctor | Medical staff | Administrator |
+|---|---|---|---|---|
+| Public setup/login | Login; initial administrator setup is not available | Login only | Login only | Login; create doctor/staff accounts |
+| Patients | Own profile and associated records only | Registered/assigned patients; may register/reset passwords | Basic directory; may register/reset passwords | Manage patient accounts and access directory |
+| Appointments | Own appointments only | Assigned appointments only | Book, assign, update, and cancel | Manage all appointments |
+| Beds | None | Beds for registered/assigned patients | Create and manage assignments | Create, manage, and remove beds |
+| Billing | Own bills only | None | None | Issue, view, pay, or void bills |
+| Prescriptions/vitals/notes | Own records read-only | Read records for registered/assigned patients; create/edit own clinical records | No clinical access | Read prescriptions/vitals; clinical-note API is doctor/patient only |
+| Audit log | None | None | None | Read audit events |
+
+These are API-side permissions and ownership filters; frontend route guards are additional UI behavior, not the security boundary.
+
 ## Checks
 
 ```powershell
@@ -105,3 +121,13 @@ npm.cmd test
 npm.cmd run build
 npm.cmd audit --omit=dev --audit-level=moderate
 ```
+
+API integration tests use a disposable local database, never Atlas. The GitHub CI workflow starts a local MongoDB service and sets this variable automatically. To run the same suite locally, start MongoDB and run:
+
+```powershell
+$env:MONGODB_TEST_URI = "mongodb://127.0.0.1:27017/curasys_hms_test"
+npm.cmd test
+Remove-Item Env:MONGODB_TEST_URI
+```
+
+The test runner creates a uniquely named database from the `_test` database name and drops only that test database when the suite finishes. Do not set `MONGODB_TEST_URI` to Atlas or a database containing real records.

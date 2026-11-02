@@ -79,6 +79,15 @@ test('only patients require UHIDs and the string UHID index is partial and uniqu
   assert.deepEqual(index[1].partialFilterExpression, { uhid: { $type: 'string' } });
 });
 
+test('only one bootstrap administrator can be recorded by the database', () => {
+  const index = User.schema.indexes().find(([, options]) => options.name === 'unique_bootstrap_admin');
+  assert.ok(index);
+  assert.deepEqual(index[0], { isBootstrapAdmin: 1 });
+  assert.equal(index[1].unique, true);
+  assert.deepEqual(index[1].partialFilterExpression, { isBootstrapAdmin: true });
+  assert.equal(new User({ role: 'admin' }).isBootstrapAdmin, false);
+});
+
 test('user schema defaults new accounts to active and current-password sessions', () => {
   const user = new User({
     name: 'Test User',

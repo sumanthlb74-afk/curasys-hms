@@ -53,8 +53,13 @@ const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false }));
+const clientOrigin = process.env.CLIENT_ORIGIN || (
+  process.env.NODE_ENV === 'production' ? null : 'http://localhost:5173'
+);
 app.use(cors({
-  origin: process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? false : 'http://localhost:5173'),
+  origin: (origin, callback) => {
+    callback(null, origin && origin === clientOrigin ? origin : false);
+  },
   credentials: false,
 }));
 app.use(compression());
@@ -134,7 +139,7 @@ function authenticate(request, response, next) {
           || user.isActive === false
           || user.role !== claims.role
           || (claims.sessionVersion || 0) !== (user.sessionVersion || 0)
-          || (user.passwordChangedAt && claims.iat * 1000 < user.passwordChangedAt.getTime())
+          || (user.passwordChangedAt && claims.iat < Math.floor(user.passwordChangedAt.getTime() / 1000))
         ) {
           response.status(401).json({ error: 'Your session is no longer valid. Sign in again.' });
           return;
@@ -254,7 +259,7 @@ async function assignUhid() {
   const counter = await Counter.findOneAndUpdate(
     { name: `uhid-${year}` },
     { $inc: { value: 1 } },
-    { new: true, upsert: true, setDefaultsOnInsert: true },
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
   );
   return `CUR-${year}-${String(counter.value).padStart(6, '0')}`;
 }
@@ -267,7 +272,7 @@ async function nextInvoiceNumber() {
   const counter = await Counter.findOneAndUpdate(
     { name: `invoice-${year}` },
     { $inc: { value: 1 } },
-    { new: true, upsert: true, setDefaultsOnInsert: true },
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
   );
   return `INV-${year}-${String(counter.value).padStart(6, '0')}`;
 }
@@ -275,7 +280,7 @@ async function nextInvoiceNumber() {
 async function createUser({
   name, email, password, role, phone, specialization, dateOfBirth, sex, bloodGroup,
   address, emergencyContact, allergies, chronicConditions, currentMedications, heightCm, weightKg,
-  registeredBy, mustChangePassword = false,
+  registeredBy, mustChangePassword = false, isBootstrapAdmin = false,
 }) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -284,6 +289,7 @@ async function createUser({
         email: email.trim().toLowerCase(),
         password,
         role,
+        isBootstrapAdmin,
         registeredBy: registeredBy || null,
         mustChangePassword,
         passwordChangedAt: mustChangePassword ? new Date() : null,
@@ -382,7 +388,13 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     response.status(403).json({ error: 'Only the project administrator can be registered through this one-time setup.' });
     return;
   }
-  const expectedKey = Buffer.from(process.env.ADMIN_REGISTRATION_KEY || '', 'utf8');
+  if (!process.env.ADMIN_REGISTRATION_KEY?.trim()) {
+    response.status(503).json({
+      error: 'Administrator setup is unavailable because ADMIN_REGISTRATION_KEY is missing from the API environment. Configure it on the Render API service and redeploy.',
+    });
+    return;
+  }
+  const expectedKey = Buffer.from(process.env.ADMIN_REGISTRATION_KEY, 'utf8');
   const providedKey = Buffer.from(typeof adminRegistrationKey === 'string' ? adminRegistrationKey : '', 'utf8');
   const validRegistrationKey = expectedKey.length > 0
     && expectedKey.length === providedKey.length
@@ -396,7 +408,18 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     return;
   }
 
-  const user = await createUser({ name, email, password, role, phone, specialization });
+  let user;
+  try {
+    user = await createUser({
+      name, email, password, role, phone, specialization, isBootstrapAdmin: true,
+    });
+  } catch (error) {
+    if (error.code === 11000 && error.keyPattern?.isBootstrapAdmin) {
+      response.status(403).json({ error: 'Administrator registration is closed. An administrator has already completed setup.' });
+      return;
+    }
+    throw error;
+  }
   response.status(201).json({ token: signToken(user), user: publicUser(user) });
 }));
 
@@ -500,7 +523,7 @@ app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (requ
   const doctor = await User.findOneAndUpdate(
     { _id: request.params.id, role: 'doctor', isActive: { $ne: false } },
     { $set: { specialization: request.body.specialization } },
-    { new: true, runValidators: true },
+    { returnDocument: 'after', runValidators: true },
   );
   if (!doctor) {
     response.status(404).json({ error: 'Doctor not found.' });
@@ -661,7 +684,7 @@ app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) 
   const patient = await User.findOneAndUpdate(
     { _id: request.params.id, role: 'patient', isActive: { $ne: false } },
     update,
-    { new: true, runValidators: true },
+    { returnDocument: 'after', runValidators: true },
   );
   if (!patient) {
     response.status(404).json({ error: 'Patient not found.' });
@@ -681,7 +704,7 @@ app.delete('/api/patients/:id', authenticate, allow('admin'), asyncRoute(async (
       $set: { isActive: false, deletedAt: new Date(), deletedBy: request.user._id },
       $inc: { sessionVersion: 1 },
     },
-    { new: true },
+    { returnDocument: 'after' },
   );
   if (!patient) {
     response.status(404).json({ error: 'Patient not found.' });
@@ -705,7 +728,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
     _id: request.params.id,
     role: 'patient',
     isActive: { $ne: false },
-  }).select('+password registeredBy');
+  }).select('+password registeredBy sessionVersion');
   if (!patient) {
     response.status(404).json({ error: 'Patient not found.' });
     return;
@@ -858,7 +881,7 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'admin')
     response.status(409).json({ error: 'This doctor already has an appointment in that one-hour slot.' });
     return;
   }
-  const appointment = await Appointment.findOneAndUpdate(appointmentFilter, update, { new: true, runValidators: true })
+  const appointment = await Appointment.findOneAndUpdate(appointmentFilter, update, { returnDocument: 'after', runValidators: true })
     .populate('patientId', 'name uhid')
     .populate('doctorId', 'name specialization');
   if (!appointment) {
@@ -876,7 +899,7 @@ app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff'), async
   const appointment = await Appointment.findByIdAndUpdate(
     request.params.id,
     { status: 'Cancelled' },
-    { new: true, runValidators: true },
+    { returnDocument: 'after', runValidators: true },
   );
   if (!appointment) {
     response.status(404).json({ error: 'Appointment not found.' });
@@ -971,7 +994,7 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
     return;
   }
   if (update.status === 'Available' || update.status === 'Maintenance') update.patientId = null;
-  const bed = await Bed.findByIdAndUpdate(request.params.id, update, { new: true, runValidators: true })
+  const bed = await Bed.findByIdAndUpdate(request.params.id, update, { returnDocument: 'after', runValidators: true })
     .populate('patientId', 'name uhid');
   if (!bed) {
     response.status(404).json({ error: 'Bed not found.' });
@@ -1146,7 +1169,7 @@ app.put('/api/clinical-notes/:id', authenticate, allow('doctor'), asyncRoute(asy
   const clinicalNote = await ClinicalNote.findOneAndUpdate(
     { _id: request.params.id, doctorId: request.user.id },
     update,
-    { new: true, runValidators: true },
+    { returnDocument: 'after', runValidators: true },
   );
   if (!clinicalNote) {
     response.status(404).json({ error: 'Clinical note not found or you do not have permission to update it.' });
@@ -1230,7 +1253,7 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(asyn
     response.status(400).json({ error: 'Provide a diagnosis or medicines to update.' });
     return;
   }
-  const prescription = await Prescription.findOneAndUpdate(filter, update, { new: true, runValidators: true });
+  const prescription = await Prescription.findOneAndUpdate(filter, update, { returnDocument: 'after', runValidators: true });
   if (!prescription) {
     response.status(404).json({ error: 'Prescription not found or you do not have permission to update it.' });
     return;
@@ -1323,7 +1346,7 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
   const vital = await Vital.findOneAndUpdate(
     { _id: request.params.id, recordedBy: request.user.id },
     update,
-    { new: true, runValidators: true },
+    { returnDocument: 'after', runValidators: true },
   );
   if (!vital) {
     response.status(404).json({ error: 'Vital record not found.' });
@@ -1418,6 +1441,14 @@ export async function startServer() {
     throw new Error('HOSPITAL_TZ must be a valid IANA time zone.');
   }
   await mongoose.connect(process.env.MONGODB_URI);
+  await User.collection.createIndex(
+    { isBootstrapAdmin: 1 },
+    {
+      name: 'unique_bootstrap_admin',
+      unique: true,
+      partialFilterExpression: { isBootstrapAdmin: true },
+    },
+  );
   const port = Number(process.env.PORT || process.env.API_PORT || 3001);
   return app.listen(port, '0.0.0.0', () => {
     console.log(`Curasys API listening on port ${port} (MongoDB connected)`);
