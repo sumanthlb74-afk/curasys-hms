@@ -5,8 +5,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import express from 'express';
+import helmet from 'helmet';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import rateLimit from 'express-rate-limit';
+import bcrypt from 'bcryptjs';
 import Appointment from './models/Appointment.js';
 import Bed from './models/Bed.js';
 import Billing from './models/Billing.js';
@@ -17,7 +20,6 @@ import Vital from './models/Vital.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '.env') });
 
-const roles = ['patient', 'doctor', 'staff', 'admin'];
 const departments = ['Cardiology', 'Neurology', 'Orthopedics', 'General Medicine', 'Pediatrics', 'Emergency'];
 const wards = ['ICU', 'Emergency', 'General Ward', 'Pediatrics'];
 const bedStatuses = ['Available', 'Occupied', 'Maintenance'];
@@ -25,11 +27,28 @@ const appointmentStatuses = ['Scheduled', 'Completed', 'Cancelled'];
 const triageLevels = ['Urgent', 'OPD Routine', 'Follow-up'];
 
 const app = express();
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
   origin: process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === 'production' ? false : 'http://localhost:5173'),
   credentials: false,
 }));
-app.use(express.json({ limit: '20kb' }));
+app.use(express.json({ limit: '64kb' }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many authentication attempts. Try again in 15 minutes.' },
+});
+const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many account registration attempts. Try again later.' },
+});
 
 function publicUser(user) {
   return {
@@ -38,6 +57,7 @@ function publicUser(user) {
     email: user.email,
     role: user.role,
     uhid: user.uhid,
+    mustChangePassword: user.mustChangePassword,
     phone: user.phone,
     specialization: user.specialization,
     dateOfBirth: user.dateOfBirth,
@@ -57,7 +77,11 @@ function signToken(user) {
   if (!process.env.JWT_SECRET) {
     throw new Error('JWT_SECRET is not configured.');
   }
-  return jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '8h' });
+  return jwt.sign(
+    { sub: user.id, role: user.role, sessionVersion: user.sessionVersion || 0 },
+    process.env.JWT_SECRET,
+    { expiresIn: '8h' },
+  );
 }
 
 function authenticate(request, response, next) {
@@ -71,11 +95,24 @@ function authenticate(request, response, next) {
     const claims = jwt.verify(token, process.env.JWT_SECRET);
     User.findById(claims.sub)
       .then((user) => {
-        if (!user || user.role !== claims.role) {
+        if (
+          !user
+          || user.isActive === false
+          || user.role !== claims.role
+          || (claims.sessionVersion || 0) !== (user.sessionVersion || 0)
+        ) {
           response.status(401).json({ error: 'Your session is no longer valid. Sign in again.' });
           return;
         }
         request.user = user;
+        if (
+          user.mustChangePassword
+          && request.path !== '/api/auth/me'
+          && request.path !== '/api/auth/change-password'
+        ) {
+          response.status(403).json({ error: 'Change your temporary password before continuing.' });
+          return;
+        }
         next();
       })
       .catch(next);
@@ -103,13 +140,14 @@ function validObjectId(value) {
 }
 
 function assignUhid() {
-  const suffix = String(crypto.randomBytes(4).readUInt32BE(0) % 10000).padStart(4, '0');
+  const suffix = crypto.randomBytes(6).toString('hex').toUpperCase();
   return `CUR-${new Date().getFullYear()}-${suffix}`;
 }
 
 async function createUser({
   name, email, password, role, phone, specialization, dateOfBirth, sex, bloodGroup,
   address, emergencyContact, allergies, chronicConditions, currentMedications, heightCm, weightKg,
+  registeredBy, mustChangePassword = false,
 }) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -118,6 +156,8 @@ async function createUser({
         email: email.trim().toLowerCase(),
         password,
         role,
+        registeredBy: registeredBy || null,
+        mustChangePassword,
         phone: phone?.trim() || '',
         specialization: role === 'doctor' ? specialization?.trim() || '' : '',
         dateOfBirth: dateOfBirth || null,
@@ -146,28 +186,79 @@ function validDate(value) {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-app.get('/api/health', (_request, response) => {
-  response.json({ status: 'ok', database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
-});
+function isFutureAppointment(date, time) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map(({ type, value }) => [type, value]));
+  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  const currentTime = `${parts.hour}:${parts.minute}`;
+  return date > today || (date === today && time > currentTime);
+}
 
-app.post('/api/auth/register', asyncRoute(async (request, response) => {
+async function doctorPatientIds(doctorId) {
+  const [appointmentIds, registeredPatients] = await Promise.all([
+    Appointment.distinct('patientId', { doctorId, status: { $ne: 'Cancelled' } }),
+    User.distinct('_id', { role: 'patient', registeredBy: doctorId, isActive: { $ne: false } }),
+  ]);
+  const appointedPatients = appointmentIds.length
+    ? await User.distinct('_id', {
+      _id: { $in: appointmentIds },
+      role: 'patient',
+      isActive: { $ne: false },
+    })
+    : [];
+  return [...new Set([...appointedPatients, ...registeredPatients].map(String))];
+}
+
+async function doctorCanAccessPatient(doctorId, patientId) {
+  return Boolean(
+    await Appointment.exists({ doctorId, patientId, status: { $ne: 'Cancelled' } })
+    || await User.exists({ _id: patientId, role: 'patient', registeredBy: doctorId, isActive: { $ne: false } }),
+  );
+}
+
+app.get('/api/health', asyncRoute(async (_request, response) => {
+  if (mongoose.connection.readyState !== 1) {
+    response.status(503).json({ status: 'unavailable', database: 'disconnected' });
+    return;
+  }
+  try {
+    await mongoose.connection.db.admin().ping();
+  } catch {
+    response.status(503).json({ status: 'unavailable', database: 'disconnected' });
+    return;
+  }
+  response.json({ status: 'ok', database: 'connected' });
+}));
+
+app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, response) => {
   const { name, email, password, role, phone, specialization, adminRegistrationKey } = request.body ?? {};
   if (
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    || typeof password !== 'string' || password.length < 8
-    || !roles.includes(role)
-    || (role === 'doctor' && (typeof specialization !== 'string' || !specialization.trim()))
+    || email.length > 254
+    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
   ) {
-    response.status(400).json({ error: 'Enter a valid name, email, password (at least 8 characters), role, and doctor specialization when applicable.' });
+    response.status(400).json({ error: 'Enter a valid name, email, and password with at least 8 characters to set up an administrator account.' });
     return;
   }
-  if (role === 'patient' || role === 'staff') {
-    response.status(403).json({ error: 'Patient and medical staff accounts must be created by an administrator.' });
+  if (role !== 'admin') {
+    response.status(403).json({ error: 'Only the project administrator can be registered through this one-time setup.' });
     return;
   }
-  if (role === 'admin' && (!process.env.ADMIN_REGISTRATION_KEY || adminRegistrationKey !== process.env.ADMIN_REGISTRATION_KEY)) {
+  if (!process.env.ADMIN_REGISTRATION_KEY || adminRegistrationKey !== process.env.ADMIN_REGISTRATION_KEY) {
     response.status(403).json({ error: 'Admin registration requires the private ADMIN_REGISTRATION_KEY configured by the project owner.' });
+    return;
+  }
+  if (await User.exists({ role: 'admin' })) {
+    response.status(403).json({ error: 'Administrator registration is closed. Ask an existing administrator to create staff accounts.' });
     return;
   }
 
@@ -175,15 +266,18 @@ app.post('/api/auth/register', asyncRoute(async (request, response) => {
   response.status(201).json({ token: signToken(user), user: publicUser(user) });
 }));
 
-app.post('/api/auth/login', asyncRoute(async (request, response) => {
-  const { email, password, role } = request.body ?? {};
-  if (typeof email !== 'string' || typeof password !== 'string' || !roles.includes(role)) {
-    response.status(400).json({ error: 'Enter your email, password, and account role.' });
+app.post('/api/auth/login', authLimiter, asyncRoute(async (request, response) => {
+  const { email, password } = request.body ?? {};
+  if (typeof email !== 'string' || email.length > 254 || typeof password !== 'string' || !password || password.length > 128) {
+    response.status(400).json({ error: 'Enter your email and password.' });
     return;
   }
 
-  const user = await User.findOne({ email: email.trim().toLowerCase(), role }).select('+password');
-  if (!user || !(await user.verifyPassword(password))) {
+  const user = await User.findOne({ email: email.trim().toLowerCase() }).select('+password');
+  const passwordMatches = user
+    ? await user.verifyPassword(password)
+    : await bcrypt.compare(password, '$2b$12$SnfE2ps00748FaTzgA3jAe/ST6CV08ai5sKmXhJKmr87TkTyn1YOe');
+  if (!user || user.isActive === false || !passwordMatches) {
     response.status(401).json({ error: 'Email or password is incorrect.' });
     return;
   }
@@ -194,26 +288,94 @@ app.get('/api/auth/me', authenticate, (request, response) => {
   response.json({ user: publicUser(request.user) });
 });
 
-app.get('/api/doctors', authenticate, asyncRoute(async (_request, response) => {
-  const doctors = await User.find({ role: 'doctor' })
-    .select('name email uhid specialization')
+app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, response) => {
+  const { currentPassword, newPassword } = request.body ?? {};
+  if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+    response.status(400).json({ error: 'Enter your current password and a new password with at least 8 characters.' });
+    return;
+  }
+  const user = await User.findById(request.user.id).select('+password');
+  if (!user || !(await user.verifyPassword(currentPassword))) {
+    response.status(401).json({ error: 'Your current password is incorrect.' });
+    return;
+  }
+  if (currentPassword === newPassword) {
+    response.status(400).json({ error: 'Choose a new password different from your current password.' });
+    return;
+  }
+  user.password = newPassword;
+  user.mustChangePassword = false;
+  user.sessionVersion = (user.sessionVersion || 0) + 1;
+  await user.save();
+  response.json({ token: signToken(user), user: publicUser(user) });
+}));
+
+app.get('/api/doctors', authenticate, allow('staff', 'admin'), asyncRoute(async (_request, response) => {
+  const doctors = await User.find({ role: 'doctor', isActive: { $ne: false } })
+    .select('name specialization')
     .sort({ name: 1 })
     .lean();
   response.json({ doctors });
 }));
 
+app.post('/api/doctors', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  const { name, email, password, phone, specialization } = request.body ?? {};
+  if (
+    typeof name !== 'string' || !name.trim() || name.trim().length > 100
+    || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254
+    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
+    || !departments.includes(specialization)
+  ) {
+    response.status(400).json({ error: 'Enter a valid name, email, password, phone, and department.' });
+    return;
+  }
+  const doctor = await createUser({
+    name, email, password, phone, specialization, role: 'doctor',
+    registeredBy: request.user.id, mustChangePassword: true,
+  });
+  response.status(201).json({ doctor: publicUser(doctor) });
+}));
+
+app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  if (!validObjectId(request.params.id) || !departments.includes(request.body?.specialization)) {
+    response.status(400).json({ error: 'Choose a valid doctor and department.' });
+    return;
+  }
+  if (await Appointment.exists({
+    doctorId: request.params.id,
+    status: 'Scheduled',
+    department: { $ne: request.body.specialization },
+  })) {
+    response.status(409).json({ error: 'Reassign or cancel scheduled appointments before changing this doctor’s department.' });
+    return;
+  }
+  const doctor = await User.findOneAndUpdate(
+    { _id: request.params.id, role: 'doctor', isActive: { $ne: false } },
+    { $set: { specialization: request.body.specialization } },
+    { new: true, runValidators: true },
+  );
+  if (!doctor) {
+    response.status(404).json({ error: 'Doctor not found.' });
+    return;
+  }
+  response.json({ doctor: publicUser(doctor) });
+}));
+
 app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+  const filter = { role: 'patient', isActive: { $ne: false } };
+  if (request.user.role === 'doctor') filter._id = { $in: await doctorPatientIds(request.user.id) };
   const patientFields = request.user.role === 'staff'
     ? 'name email uhid phone'
     : 'name email uhid phone dateOfBirth sex bloodGroup address emergencyContact allergies chronicConditions currentMedications heightCm weightKg';
-  const patients = await User.find({ role: 'patient' })
+  const patients = await User.find(filter)
     .select(patientFields)
     .sort({ name: 1 })
     .lean();
   response.json({ patients });
 }));
 
-app.post('/api/patients', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
   const {
     name, email, password, phone, dateOfBirth, sex, bloodGroup, address, emergencyContact,
     allergies, chronicConditions, currentMedications, heightCm, weightKg,
@@ -223,8 +385,8 @@ app.post('/api/patients', authenticate, allow('admin'), asyncRoute(async (reques
   const contact = emergencyContact ?? {};
   if (
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
-    || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    || typeof password !== 'string' || password.length < 8
+    || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    || typeof password !== 'string' || password.length < 8 || password.length > 128
     || !validOptionalString(phone, 30)
     || (dateOfBirth !== undefined && dateOfBirth !== '' && !validDate(dateOfBirth))
     || (sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(sex))
@@ -244,12 +406,13 @@ app.post('/api/patients', authenticate, allow('admin'), asyncRoute(async (reques
   const patient = await createUser({
     name, email, password, role: 'patient', phone, dateOfBirth, sex, bloodGroup, address,
     emergencyContact: contact, allergies, chronicConditions, currentMedications, heightCm, weightKg,
+    registeredBy: request.user.id, mustChangePassword: true,
   });
   response.status(201).json({ patient: publicUser(patient) });
 }));
 
 app.get('/api/staff', authenticate, allow('admin'), asyncRoute(async (_request, response) => {
-  const staff = await User.find({ role: 'staff' })
+  const staff = await User.find({ role: 'staff', isActive: { $ne: false } })
     .select('name email uhid phone')
     .sort({ name: 1 })
     .lean();
@@ -259,14 +422,18 @@ app.get('/api/staff', authenticate, allow('admin'), asyncRoute(async (_request, 
 app.post('/api/staff', authenticate, allow('admin'), asyncRoute(async (request, response) => {
   const { name, email, password, phone } = request.body ?? {};
   if (
-    typeof name !== 'string' || !name.trim()
-    || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    || typeof password !== 'string' || password.length < 8
+    typeof name !== 'string' || !name.trim() || name.trim().length > 100
+    || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
   ) {
     response.status(400).json({ error: 'Enter a name, valid email, and password with at least 8 characters.' });
     return;
   }
-  const staff = await createUser({ name, email, password, role: 'staff', phone });
+  const staff = await createUser({
+    name, email, password, role: 'staff', phone,
+    registeredBy: request.user.id, mustChangePassword: true,
+  });
   response.status(201).json({ staff: publicUser(staff) });
 }));
 
@@ -290,12 +457,22 @@ app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) 
   if (
     !Object.keys(update).length
     || (update.name !== undefined && (!update.name || update.name.length > 100))
-    || (update.email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(update.email))
+    || (update.email !== undefined && (update.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(update.email)))
+    || (update.phone !== undefined && (typeof update.phone !== 'string' || update.phone.length > 30))
     || (update.dateOfBirth !== undefined && update.dateOfBirth !== '' && !validDate(update.dateOfBirth))
     || (update.sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(update.sex))
     || (update.bloodGroup !== undefined && !['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].includes(update.bloodGroup))
     || (update.address !== undefined && (typeof update.address !== 'string' || update.address.length > 500))
-    || (update.emergencyContact !== undefined && (!update.emergencyContact || typeof update.emergencyContact !== 'object' || Array.isArray(update.emergencyContact)))
+    || (update.emergencyContact !== undefined && (
+      !update.emergencyContact
+      || typeof update.emergencyContact !== 'object'
+      || Array.isArray(update.emergencyContact)
+      || ['name', 'relationship', 'phone'].some((field) => (
+        update.emergencyContact[field] !== undefined
+        && (typeof update.emergencyContact[field] !== 'string'
+          || update.emergencyContact[field].length > (field === 'relationship' ? 50 : field === 'name' ? 100 : 30))
+      ))
+    ))
     || (['allergies', 'chronicConditions', 'currentMedications'].some((field) => update[field] !== undefined && !validList(update[field])))
     || (update.heightCm !== undefined && update.heightCm !== null && (!Number.isFinite(Number(update.heightCm)) || Number(update.heightCm) < 30 || Number(update.heightCm) > 250))
     || (update.weightKg !== undefined && update.weightKg !== null && (!Number.isFinite(Number(update.weightKg)) || Number(update.weightKg) < 1 || Number(update.weightKg) > 500))
@@ -304,7 +481,7 @@ app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) 
     return;
   }
   const patient = await User.findOneAndUpdate(
-    { _id: request.params.id, role: 'patient' },
+    { _id: request.params.id, role: 'patient', isActive: { $ne: false } },
     update,
     { new: true, runValidators: true },
   );
@@ -320,19 +497,49 @@ app.delete('/api/patients/:id', authenticate, allow('admin'), asyncRoute(async (
     response.status(400).json({ error: 'Invalid patient ID.' });
     return;
   }
-  const patient = await User.findOneAndDelete({ _id: request.params.id, role: 'patient' });
+  const patient = await User.findOneAndUpdate(
+    { _id: request.params.id, role: 'patient', isActive: { $ne: false } },
+    { $set: { isActive: false }, $inc: { sessionVersion: 1 } },
+    { new: true },
+  );
   if (!patient) {
     response.status(404).json({ error: 'Patient not found.' });
     return;
   }
-  await Promise.all([
-    Appointment.deleteMany({ patientId: patient.id }),
-    Bed.updateMany({ patientId: patient.id }, { $set: { patientId: null, status: 'Available' } }),
-    Billing.deleteMany({ patientId: patient.id }),
-    ClinicalNote.deleteMany({ patientId: patient.id }),
-    Prescription.deleteMany({ patientId: patient.id }),
-    Vital.deleteMany({ patientId: patient.id }),
-  ]);
+  response.json({ success: true, message: 'Patient account deactivated; the medical record has been retained.' });
+}));
+
+app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+  if (!validObjectId(request.params.id)) {
+    response.status(400).json({ error: 'Invalid patient ID.' });
+    return;
+  }
+  const { password } = request.body ?? {};
+  if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+    response.status(400).json({ error: 'Enter a temporary password with at least 8 characters.' });
+    return;
+  }
+  const patient = await User.findOne({
+    _id: request.params.id,
+    role: 'patient',
+    isActive: { $ne: false },
+  }).select('+password registeredBy');
+  if (!patient) {
+    response.status(404).json({ error: 'Patient not found.' });
+    return;
+  }
+  if (
+    request.user.role === 'doctor'
+    && String(patient.registeredBy) !== request.user.id
+    && !await doctorCanAccessPatient(request.user.id, patient.id)
+  ) {
+    response.status(403).json({ error: 'Only the registering doctor or a doctor assigned to this patient can reset the password.' });
+    return;
+  }
+  patient.password = password;
+  patient.mustChangePassword = true;
+  patient.sessionVersion = (patient.sessionVersion || 0) + 1;
+  await patient.save();
   response.json({ success: true });
 }));
 
@@ -340,15 +547,10 @@ app.get('/api/appointments', authenticate, asyncRoute(async (request, response) 
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
-      ? {
-        $or: [
-          { doctorId: request.user.id },
-          { doctorId: null, ...(request.user.specialization ? { department: request.user.specialization } : {}) },
-        ],
-      }
+      ? { doctorId: request.user.id }
       : {};
   const appointments = await Appointment.find(filter)
-    .populate('patientId', 'name uhid email phone')
+    .populate('patientId', 'name uhid phone')
     .populate('doctorId', 'name specialization')
     .sort({ date: 1, time: 1 })
     .lean();
@@ -360,23 +562,24 @@ app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(
   const patientId = request.body?.patientId;
   if (
     !validObjectId(patientId)
-    || !await User.exists({ _id: patientId, role: 'patient' })
+    || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
     || typeof department !== 'string' || !departments.includes(department)
-    || !validDate(date) || date < new Date().toISOString().slice(0, 10)
+    || !validDate(date)
     || typeof time !== 'string' || !/^([01]\d|2[0-3]):00$/.test(time)
+    || !isFutureAppointment(date, time)
     || typeof symptoms !== 'string' || !symptoms.trim() || symptoms.length > 2000
     || (triage !== undefined && !triageLevels.includes(triage))
   ) {
-    response.status(400).json({ error: 'Enter a valid department, date, time, symptoms, and triage level.' });
+    response.status(400).json({ error: 'Choose an active patient and enter a future date and time, valid department, symptoms, and triage level.' });
     return;
   }
-  if (doctorId && (!validObjectId(doctorId) || !await User.exists({ _id: doctorId, role: 'doctor' }))) {
+  if (doctorId && (!validObjectId(doctorId) || !await User.exists({ _id: doctorId, role: 'doctor', isActive: { $ne: false } }))) {
     response.status(400).json({ error: 'Choose a valid doctor.' });
     return;
   }
   if (doctorId) {
     const doctor = await User.findById(doctorId).select('specialization');
-    if (doctor.specialization && doctor.specialization !== department) {
+    if (!doctor || doctor.specialization !== department) {
       response.status(400).json({ error: 'The selected doctor does not match this department.' });
       return;
     }
@@ -413,41 +616,61 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'admin')
     response.status(403).json({ error: 'Doctors cannot reassign appointments to another doctor.' });
     return;
   }
-  if (status !== undefined && appointmentStatuses.includes(status)) update.status = status;
-  if (triage !== undefined && triageLevels.includes(triage)) update.triage = triage;
+  if (status !== undefined) {
+    if (!appointmentStatuses.includes(status)) {
+      response.status(400).json({ error: 'Choose a valid appointment status.' });
+      return;
+    }
+    update.status = status;
+  }
+  if (triage !== undefined) {
+    if (!triageLevels.includes(triage)) {
+      response.status(400).json({ error: 'Choose a valid triage level.' });
+      return;
+    }
+    update.triage = triage;
+  }
   if (doctorId !== undefined) {
-    if (doctorId && (!validObjectId(doctorId) || !await User.exists({ _id: doctorId, role: 'doctor' }))) {
+    if (doctorId && (!validObjectId(doctorId) || !await User.exists({ _id: doctorId, role: 'doctor', isActive: { $ne: false } }))) {
       response.status(400).json({ error: 'Choose a valid doctor.' });
       return;
     }
     update.doctorId = doctorId || null;
   }
-  if (request.user.role === 'doctor') update.doctorId = request.user.id;
   if (!Object.keys(update).length) {
     response.status(400).json({ error: 'Provide a valid status, triage, or doctor assignment.' });
     return;
   }
   const appointmentFilter = request.user.role === 'doctor'
-    ? {
-      _id: request.params.id,
-      $or: [
-        { doctorId: request.user.id },
-        { doctorId: null, ...(request.user.specialization ? { department: request.user.specialization } : {}) },
-      ],
-    }
+    ? { _id: request.params.id, doctorId: request.user.id }
     : { _id: request.params.id };
-  if (update.doctorId && update.status !== 'Cancelled') {
-    const appointmentToAssign = await Appointment.findById(request.params.id).select('date time status');
-    if (appointmentToAssign && (update.status === 'Scheduled' || appointmentToAssign.status === 'Scheduled') && await Appointment.exists({
-      _id: { $ne: appointmentToAssign.id },
-      doctorId: update.doctorId,
-      date: appointmentToAssign.date,
-      time: appointmentToAssign.time,
-      status: 'Scheduled',
-    })) {
-      response.status(409).json({ error: 'This doctor already has an appointment in that one-hour slot.' });
+  const existingAppointment = await Appointment.findOne(appointmentFilter);
+  if (!existingAppointment) {
+    response.status(404).json({ error: 'Appointment not found.' });
+    return;
+  }
+  const nextDoctorId = update.doctorId === undefined ? existingAppointment.doctorId : update.doctorId;
+  const nextStatus = update.status || existingAppointment.status;
+  if (nextDoctorId) {
+    const doctor = await User.findOne({
+      _id: nextDoctorId,
+      role: 'doctor',
+      isActive: { $ne: false },
+    }).select('specialization');
+    if (!doctor || doctor.specialization !== existingAppointment.department) {
+      response.status(400).json({ error: 'The selected doctor does not match this appointment department.' });
       return;
     }
+  }
+  if (nextDoctorId && nextStatus === 'Scheduled' && await Appointment.exists({
+    _id: { $ne: existingAppointment.id },
+    doctorId: nextDoctorId,
+    date: existingAppointment.date,
+    time: existingAppointment.time,
+    status: 'Scheduled',
+  })) {
+    response.status(409).json({ error: 'This doctor already has an appointment in that one-hour slot.' });
+    return;
   }
   const appointment = await Appointment.findOneAndUpdate(appointmentFilter, update, { new: true, runValidators: true })
     .populate('patientId', 'name uhid')
@@ -476,10 +699,15 @@ app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff'), async
   response.json({ appointment });
 }));
 
-app.get('/api/beds', authenticate, allow('admin', 'doctor', 'staff'), asyncRoute(async (_request, response) => {
+app.get('/api/beds', authenticate, allow('admin', 'doctor', 'staff'), asyncRoute(async (request, response) => {
+  const patientIds = request.user.role === 'doctor' ? await doctorPatientIds(request.user.id) : null;
+  const filter = patientIds ? { patientId: { $in: patientIds } } : {};
   const [beds, totals] = await Promise.all([
-    Bed.find().populate('patientId', 'name uhid').sort({ ward: 1, bedNumber: 1 }).lean(),
-    Bed.aggregate([{ $group: { _id: '$ward', total: { $sum: 1 }, occupied: { $sum: { $cond: [{ $eq: ['$status', 'Occupied'] }, 1, 0] } }, available: { $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] } } } }]),
+    Bed.find(filter).populate('patientId', 'name uhid').sort({ ward: 1, bedNumber: 1 }).lean(),
+    Bed.aggregate([
+      { $match: filter },
+      { $group: { _id: '$ward', total: { $sum: 1 }, occupied: { $sum: { $cond: [{ $eq: ['$status', 'Occupied'] }, 1, 0] } }, available: { $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] } } } },
+    ]),
   ]);
   response.json({ beds, totals });
 }));
@@ -501,16 +729,39 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
   }
   const { status, patientId, bedNumber, ward } = request.body ?? {};
   const update = {};
-  if (status !== undefined && bedStatuses.includes(status)) update.status = status;
+  if (status !== undefined) {
+    if (!bedStatuses.includes(status)) {
+      response.status(400).json({ error: 'Choose a valid bed status.' });
+      return;
+    }
+    update.status = status;
+  }
   if (patientId !== undefined) {
-    if (patientId && (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient' }))) {
+    if (patientId && (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } }))) {
       response.status(400).json({ error: 'Choose a valid patient.' });
       return;
     }
     update.patientId = patientId || null;
+    if (status === undefined) update.status = patientId ? 'Occupied' : 'Available';
+    if (patientId && status !== undefined && status !== 'Occupied') {
+      response.status(400).json({ error: 'An assigned patient requires the bed to be occupied.' });
+      return;
+    }
   }
-  if (bedNumber !== undefined && typeof bedNumber === 'string' && /^[A-Z0-9-]{2,20}$/i.test(bedNumber.trim())) update.bedNumber = bedNumber.trim().toUpperCase();
-  if (ward !== undefined && wards.includes(ward)) update.ward = ward;
+  if (bedNumber !== undefined) {
+    if (typeof bedNumber !== 'string' || !/^[A-Z0-9-]{2,20}$/i.test(bedNumber.trim())) {
+      response.status(400).json({ error: 'Enter a valid bed number.' });
+      return;
+    }
+    update.bedNumber = bedNumber.trim().toUpperCase();
+  }
+  if (ward !== undefined) {
+    if (!wards.includes(ward)) {
+      response.status(400).json({ error: 'Choose a valid ward.' });
+      return;
+    }
+    update.ward = ward;
+  }
   if (!Object.keys(update).length) {
     response.status(400).json({ error: 'Provide valid bed fields to update.' });
     return;
@@ -548,6 +799,11 @@ app.delete('/api/beds/:id', authenticate, allow('admin'), asyncRoute(async (requ
     response.status(400).json({ error: 'Invalid bed ID.' });
     return;
   }
+  const existingBed = await Bed.findById(request.params.id);
+  if (existingBed?.status === 'Occupied' || existingBed?.patientId) {
+    response.status(409).json({ error: 'Discharge the patient before removing this bed.' });
+    return;
+  }
   const bed = await Bed.findByIdAndDelete(request.params.id);
   if (!bed) {
     response.status(404).json({ error: 'Bed not found.' });
@@ -571,7 +827,7 @@ app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request
   const totalPaise = typeof totalAmount === 'number' ? Math.round(totalAmount * 100) : NaN;
   if (
     !validObjectId(patientId)
-    || !await User.exists({ _id: patientId, role: 'patient' })
+    || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
     || typeof totalAmount !== 'number'
     || !Number.isFinite(totalAmount)
     || totalAmount <= 0
@@ -598,7 +854,7 @@ app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'),
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
-      ? { doctorId: request.user.id }
+      ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
       : {};
   const prescriptions = await Prescription.find(filter)
     .populate('patientId', 'name uhid')
@@ -611,7 +867,7 @@ app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'),
 app.get('/api/clinical-notes', authenticate, allow('patient', 'doctor'), asyncRoute(async (request, response) => {
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
-    : { doctorId: request.user.id };
+    : { patientId: { $in: await doctorPatientIds(request.user.id) } };
   const clinicalNotes = await ClinicalNote.find(filter)
     .populate('patientId', 'name uhid')
     .populate('doctorId', 'name specialization')
@@ -629,7 +885,8 @@ app.post('/api/clinical-notes', authenticate, allow('doctor'), asyncRoute(async 
   ];
   if (
     !validObjectId(patientId)
-    || !await User.exists({ _id: patientId, role: 'patient' })
+    || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
+    || !await doctorCanAccessPatient(request.user.id, patientId)
     || typeof chiefComplaint !== 'string' || !chiefComplaint.trim() || chiefComplaint.length > 1000
     || typeof assessment !== 'string' || !assessment.trim() || assessment.length > 2000
     || typeof plan !== 'string' || !plan.trim() || plan.length > 3000
@@ -699,7 +956,8 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
   const { patientId, diagnosis, medicines, instructions, followUp } = request.body ?? {};
   if (
     !validObjectId(patientId)
-    || !await User.exists({ _id: patientId, role: 'patient' })
+    || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
+    || !await doctorCanAccessPatient(request.user.id, patientId)
     || typeof diagnosis !== 'string' || !diagnosis.trim()
     || !Array.isArray(medicines) || medicines.length < 1 || medicines.length > 30
     || medicines.some((medicine) => !medicine || typeof medicine !== 'object'
@@ -770,7 +1028,11 @@ app.delete('/api/prescriptions/:id', authenticate, allow('doctor', 'admin'), asy
 }));
 
 app.get('/api/vitals', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
-  const filter = request.user.role === 'patient' ? { patientId: request.user.id } : {};
+  const filter = request.user.role === 'patient'
+    ? { patientId: request.user.id }
+    : request.user.role === 'doctor'
+      ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
+      : {};
   const vitals = await Vital.find(filter)
     .populate('patientId', 'name uhid')
     .populate('recordedBy', 'name role')
@@ -785,7 +1047,11 @@ app.post('/api/vitals', authenticate, allow('doctor'), asyncRoute(async (request
     bloodGlucose, oxygenSaturation, heightCm, weightKg, notes,
   } = request.body ?? {};
   const targetPatientId = patientId;
-  if (!validObjectId(targetPatientId) || !await User.exists({ _id: targetPatientId, role: 'patient' })) {
+  if (
+    !validObjectId(targetPatientId)
+    || !await User.exists({ _id: targetPatientId, role: 'patient', isActive: { $ne: false } })
+    || !await doctorCanAccessPatient(request.user.id, targetPatientId)
+  ) {
     response.status(400).json({ error: 'Choose a valid patient.' });
     return;
   }
@@ -859,19 +1125,32 @@ app.use('/api', (_request, response) => {
 });
 
 app.use((error, _request, response, next) => {
-  console.error(error);
   if (response.headersSent) {
     next(error);
     return;
   }
   if (error.code === 11000) {
-    response.status(409).json({ error: 'That email or UHID is already in use.' });
+    response.status(409).json({ error: 'The submitted identifier or schedule conflicts with an existing record.' });
     return;
   }
   if (error.name === 'ValidationError' || error.name === 'CastError') {
-    response.status(400).json({ error: error.message });
+    response.status(400).json({ error: 'The submitted data is invalid. Check the fields and try again.' });
     return;
   }
+  const status = Number(error.status || error.statusCode);
+  if (status === 400 && error.type === 'entity.parse.failed') {
+    response.status(400).json({ error: 'The request body contains malformed JSON.' });
+    return;
+  }
+  if (status === 413 || error.type === 'entity.too.large') {
+    response.status(413).json({ error: 'The request is too large.' });
+    return;
+  }
+  if (status >= 400 && status < 500) {
+    response.status(status).json({ error: 'The request could not be accepted.' });
+    return;
+  }
+  console.error(error);
   response.status(500).json({ error: 'The server could not complete the request.' });
 });
 
@@ -886,7 +1165,18 @@ export async function startServer() {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  startServer().catch((error) => {
+  startServer().then((server) => {
+    const shutdown = () => {
+      server.close(() => {
+        mongoose.disconnect().catch((error) => {
+          console.error('Could not disconnect from MongoDB cleanly:', error.message);
+          process.exitCode = 1;
+        });
+      });
+    };
+    process.once('SIGTERM', shutdown);
+    process.once('SIGINT', shutdown);
+  }).catch((error) => {
     console.error('Could not start Curasys API:', error.message);
     process.exitCode = 1;
   });

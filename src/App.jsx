@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, BedDouble, CalendarDays, Check, ClipboardList, LogOut, Moon, Plus, Receipt, ShieldCheck,
@@ -36,23 +36,40 @@ function formatAppointmentDate(date) {
   return new Date(date).toLocaleDateString(undefined, { timeZone: 'UTC' });
 }
 
+function formatDateOnly(date) {
+  return new Date(date).toLocaleDateString(undefined, { timeZone: 'UTC' });
+}
+
 function formatAppointmentSlot(time) {
   const slot = appointmentSlots.find((item) => item.time === time);
   return slot?.label || time;
 }
 
 function calculateAge(dateOfBirth) {
-  if (!dateOfBirth) return null;
-  const birthDate = new Date(dateOfBirth);
-  if (Number.isNaN(birthDate.getTime())) return null;
+  if (typeof dateOfBirth !== 'string') return null;
+  const [year, month, day] = dateOfBirth.slice(0, 10).split('-').map(Number);
+  const birthDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    !year || !month || !day
+    || Number.isNaN(birthDate.getTime())
+    || birthDate.toISOString().slice(0, 10) !== dateOfBirth.slice(0, 10)
+  ) return null;
   const today = new Date();
-  let age = today.getFullYear() - birthDate.getFullYear();
-  if (today < new Date(today.getFullYear(), birthDate.getMonth(), birthDate.getDate())) age -= 1;
+  let age = today.getFullYear() - year;
+  if (today.getMonth() + 1 < month || (today.getMonth() + 1 === month && today.getDate() < day)) age -= 1;
   return age >= 0 ? age : null;
 }
 
 function parseList(value) {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function emptyPatientForm() {
+  return {
+    name: '', email: '', password: '', confirmPassword: '', phone: '', dateOfBirth: '', sex: '', bloodGroup: '', address: '',
+    emergencyContact: { name: '', relationship: '', phone: '' }, allergies: '', chronicConditions: '',
+    currentMedications: '', heightCm: '', weightKg: '',
+  };
 }
 
 function formatCurrency(paise) {
@@ -78,17 +95,24 @@ function useTheme() {
 
 function useToast() {
   const [toast, setToast] = useState(null);
+  const timer = useRef(null);
   const notify = useCallback((message, kind = 'success') => {
+    window.clearTimeout(timer.current);
     setToast({ message, kind });
-    window.setTimeout(() => setToast(null), 4200);
+    timer.current = window.setTimeout(() => setToast(null), 4200);
   }, []);
-  return [toast, notify];
+  const dismiss = useCallback(() => {
+    window.clearTimeout(timer.current);
+    setToast(null);
+  }, []);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return [toast, notify, dismiss];
 }
 
 function Toast({ toast, onClose }) {
   if (!toast) return null;
   return (
-    <div role={toast.kind === 'error' ? 'alert' : 'status'} className={`fixed right-5 top-20 z-50 flex max-w-sm items-start gap-3 rounded-xl border p-4 shadow-xl ${toast.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
+    <div role={toast.kind === 'error' ? 'alert' : 'status'} className={`fixed right-5 top-20 z-50 flex max-w-sm items-start gap-3 rounded-xl border p-4 shadow-xl ${toast.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200' : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200'}`}>
       {toast.kind === 'error' ? <X className="mt-0.5 h-4 w-4" /> : <Check className="mt-0.5 h-4 w-4" />}
       <p className="flex-1 text-sm">{toast.message}</p>
       <button onClick={onClose} aria-label="Dismiss notification"><X className="h-4 w-4" /></button>
@@ -128,6 +152,19 @@ function Empty({ children = 'No records yet. Add a record using the form above.'
   return <p className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700">{children}</p>;
 }
 
+function LoadState({ loading, error, onRetry }) {
+  if (loading) return <p className="text-sm text-slate-500">Loading records…</p>;
+  if (error) {
+    return (
+      <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
+        <span>Records could not be loaded. No conclusion about missing records can be made.</span>
+        <button onClick={onRetry} className="font-semibold underline">Try again</button>
+      </div>
+    );
+  }
+  return null;
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -139,25 +176,52 @@ function App() {
 function AppRoutes() {
   const [user, setUser] = useState(null);
   const [initializing, setInitializing] = useState(() => Boolean(localStorage.getItem('curasys_token')));
-  const [toast, notify] = useToast();
+  const [authError, setAuthError] = useState(null);
+  const [authCheckRevision, setAuthCheckRevision] = useState(0);
+  const [toast, notify, dismissToast] = useToast();
   const [theme, toggleTheme] = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
+    let active = true;
+    const handleSessionExpired = () => {
+      localStorage.removeItem('curasys_token');
+      setUser(null);
+      setInitializing(false);
+      setAuthError(null);
+      notify('Your session expired. Sign in again to continue.', 'error');
+      navigate('/login', { replace: true });
+    };
+    window.addEventListener('curasys:session-expired', handleSessionExpired);
     const token = localStorage.getItem('curasys_token');
-    if (!token) return;
-    api.get('/auth/me')
-      .then(({ data }) => setUser(data.user))
-      .catch(() => {
-        localStorage.removeItem('curasys_token');
-        setUser(null);
-      })
-      .finally(() => setInitializing(false));
-  }, []);
+    if (token) {
+      api.get('/auth/me')
+        .then(({ data }) => {
+          if (active) {
+            setUser(data.user);
+            setAuthError(null);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setUser(null);
+            if (localStorage.getItem('curasys_token')) {
+              setAuthError('Your sign-in could not be verified because the service is unavailable.');
+            }
+          }
+        })
+        .finally(() => { if (active) setInitializing(false); });
+    }
+    return () => {
+      active = false;
+      window.removeEventListener('curasys:session-expired', handleSessionExpired);
+    };
+  }, [authCheckRevision, navigate, notify]);
 
   const onAuth = (auth) => {
     localStorage.setItem('curasys_token', auth.token);
+    setAuthError(null);
     setUser(auth.user);
     navigate(rolePaths[auth.user.role], { replace: true });
   };
@@ -173,6 +237,30 @@ function AppRoutes() {
     return <div className="grid min-h-screen place-items-center text-sm text-slate-500">Checking your sign-in…</div>;
   }
 
+  if (authError) {
+    return (
+      <main className="grid min-h-screen place-items-center px-4 py-10">
+        <section className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+          <h1 className="text-xl font-bold">Sign-in service unavailable</h1>
+          <p role="alert" className="mt-2 text-sm text-slate-500">{authError} Your saved session has not been removed.</p>
+          <div className="mt-5 flex gap-3">
+            <button onClick={() => { setAuthError(null); setInitializing(true); setAuthCheckRevision((value) => value + 1); }} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white">Retry</button>
+            <button onClick={logout} className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold dark:border-slate-700">Sign in instead</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (user?.mustChangePassword) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
+        <ChangePasswordPage user={user} onAuth={onAuth} notify={notify} required />
+        <Toast toast={toast} onClose={dismissToast} />
+      </div>
+    );
+  }
+
   const path = user ? rolePaths[user.role] : '/login';
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 transition-colors dark:bg-slate-950 dark:text-slate-100">
@@ -184,16 +272,18 @@ function AppRoutes() {
               <span><span className="block font-bold">Curasys Medical Center</span><span className="block text-xs capitalize text-slate-500">Hospital information system · {user.role}</span></span>
             </Link>
             <div className="flex items-center gap-2 sm:gap-4">
-              <span className="hidden text-right sm:block"><span className="block text-sm font-medium">{user.name}</span><span className="block text-xs text-slate-500">{user.uhid}</span></span>
+              <span className="hidden text-right sm:block"><span className="block text-sm font-medium">{user.name}</span>{user.role === 'patient' && <span className="block text-xs text-slate-500">{user.uhid}</span>}</span>
+              <button onClick={() => navigate('/change-password')} className="rounded-lg border border-slate-200 px-2 py-2 text-xs sm:px-3 sm:text-sm dark:border-slate-700">Password</button>
               <button onClick={toggleTheme} className="rounded-lg border border-slate-200 p-2 dark:border-slate-700" aria-label="Toggle color theme">{theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</button>
               <button onClick={logout} className="flex items-center gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300" aria-label="Sign out"><LogOut className="h-4 w-4" /><span className="hidden sm:inline">Sign out</span></button>
             </div>
           </div>
         </header>
       )}
-      <Toast toast={toast} onClose={() => notify('')} />
+      <Toast toast={toast} onClose={dismissToast} />
       <Routes>
         <Route path="/login" element={user ? <Navigate to={path} replace /> : <AuthPage onAuth={onAuth} notify={notify} />} />
+        <Route path="/change-password" element={user ? <ChangePasswordPage user={user} onAuth={onAuth} notify={notify} /> : <Navigate to="/login" replace />} />
         <Route path="/patient-portal" element={<Protected user={user} role="patient"><PatientDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/doctor-dashboard" element={<Protected user={user} role="doctor"><DoctorDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/medical-staff" element={<Protected user={user} role="staff"><StaffDashboard notify={notify} /></Protected>} />
@@ -210,17 +300,63 @@ function Protected({ user, role, children }) {
   return children;
 }
 
+function ChangePasswordPage({ user, onAuth, notify, required = false }) {
+  const [form, setForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [loading, setLoading] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault();
+    if (form.newPassword !== form.confirmPassword) {
+      notify('The new passwords do not match.', 'error');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data } = await api.post('/auth/change-password', {
+        currentPassword: form.currentPassword,
+        newPassword: form.newPassword,
+      });
+      notify('Password updated. Your other sessions have been signed out.');
+      onAuth(data);
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <main className="grid min-h-screen place-items-center px-4 py-10">
+      <section className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+        <h1 className="text-2xl font-bold">{required ? 'Set your password' : 'Change password'}</h1>
+        <p className="mt-2 text-sm text-slate-500">{required ? 'For your security, replace the temporary password before opening your workspace.' : `Signed in as ${user.email}.`}</p>
+        <form onSubmit={submit} className="mt-6 grid gap-4">
+          <Field label="Current password"><Input type="password" autoComplete="current-password" value={form.currentPassword} onChange={(event) => setForm((value) => ({ ...value, currentPassword: event.target.value }))} required /></Field>
+          <Field label="New password"><Input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={form.newPassword} onChange={(event) => setForm((value) => ({ ...value, newPassword: event.target.value }))} required /></Field>
+          <Field label="Confirm new password"><Input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={form.confirmPassword} onChange={(event) => setForm((value) => ({ ...value, confirmPassword: event.target.value }))} required /></Field>
+          <button disabled={loading} className="rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white hover:bg-teal-700 disabled:opacity-60">{loading ? 'Updating…' : 'Update password'}</button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 function AuthPage({ onAuth, notify }) {
   const [mode, setMode] = useState('login');
-  const [role, setRole] = useState('patient');
   const [loading, setLoading] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', specialization: '', adminRegistrationKey: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '' });
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   const submit = async (event) => {
     event.preventDefault();
+    if (mode === 'register' && form.password !== form.confirmPassword) {
+      notify('The passwords do not match.', 'error');
+      return;
+    }
     setLoading(true);
     try {
-      const { data } = await api.post(mode === 'login' ? '/auth/login' : '/auth/register', { ...form, role });
+      const isRegister = mode === 'register';
+      const payload = isRegister
+        ? { name: form.name, email: form.email, password: form.password, phone: form.phone, adminRegistrationKey: form.adminRegistrationKey, role: 'admin' }
+        : { email: form.email, password: form.password };
+      const { data } = await api.post(isRegister ? '/auth/register' : '/auth/login', payload);
       notify(mode === 'login' ? 'Welcome back.' : 'Your account has been created.');
       onAuth(data);
     } catch (error) {
@@ -239,17 +375,16 @@ function AuthPage({ onAuth, notify }) {
           <p className="mt-1 text-sm text-slate-500">Hospital information system</p>
         </div>
         <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
-          {['login', 'register'].map((item) => <button key={item} onClick={() => { setMode(item); if (item === 'register' && role === 'patient') setRole('doctor'); }} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item}</button>)}
+          {['login', 'register'].map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item === 'register' ? 'Initial admin setup' : 'Sign in'}</button>)}
         </div>
         <form onSubmit={submit} className="grid gap-4">
           {isRegister && <Field label="Full name"><Input value={form.name} onChange={change('name')} autoComplete="name" required maxLength={100} /></Field>}
           <Field label="Email"><Input type="email" value={form.email} onChange={change('email')} autoComplete="email" required /></Field>
           <Field label="Password"><Input type="password" value={form.password} onChange={change('password')} autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={8} required /></Field>
+          {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
-          <Field label="Account type"><Select value={role} onChange={(event) => setRole(event.target.value)}>{(isRegister ? ['doctor', 'admin'] : ['patient', 'doctor', 'staff', 'admin']).map((item) => <option key={item} value={item} className="capitalize">{item}</option>)}</Select></Field>
-          {isRegister && role === 'doctor' && <Field label="Specialization"><Input value={form.specialization} onChange={change('specialization')} required /></Field>}
-          {isRegister && role === 'admin' && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
-          {isRegister && <p className="text-xs leading-relaxed text-slate-500">{role === 'admin' ? 'Administrator accounts require a private registration key configured by the project owner.' : 'Patient and medical staff accounts are created by an administrator.'}</p>}
+          {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
+          {isRegister && <p className="text-xs leading-relaxed text-slate-500">This one-time setup is only available before the first administrator account is created. Administrators create all doctor, staff, and patient accounts.</p>}
           <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : 'Sign in securely'}</button>
         </form>
         <p className="mt-5 text-center text-xs text-slate-500">Use fictional information only. This school project is not for real patient data.</p>
@@ -262,7 +397,12 @@ function useLoad(notify, requests) {
   const [revision, setRevision] = useState(0);
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const [error, setError] = useState(null);
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    setRevision((value) => value + 1);
+  }, []);
   const requestSignature = JSON.stringify(requests);
   useEffect(() => {
     let active = true;
@@ -271,11 +411,109 @@ function useLoad(notify, requests) {
       .then((responses) => {
         if (active) setData(Object.fromEntries(responses.map((response, index) => [requestList[index].key, response.data])));
       })
-      .catch((error) => { if (active) notify(error.message, 'error'); })
+      .catch((loadError) => {
+        if (active) {
+          setError(loadError.message);
+          notify(loadError.message, 'error');
+        }
+      })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [revision, notify, requestSignature]);
-  return { data, loading, refresh };
+  return { data, loading, error, refresh };
+}
+
+function PatientRegistrationForm({ notify, onCreated }) {
+  const [form, setForm] = useState(emptyPatientForm);
+  const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  const changeEmergencyContact = (key) => (event) => setForm((value) => ({
+    ...value,
+    emergencyContact: { ...value.emergencyContact, [key]: event.target.value },
+  }));
+  const submit = async (event) => {
+    event.preventDefault();
+    if (form.password !== form.confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
+    try {
+      const patientData = { ...form };
+      delete patientData.confirmPassword;
+      const { data } = await api.post('/patients', {
+        ...patientData,
+        allergies: parseList(form.allergies),
+        chronicConditions: parseList(form.chronicConditions),
+        currentMedications: parseList(form.currentMedications),
+      });
+      notify(`Patient registered with health ID ${data.patient.uhid}. They must change the temporary password at first sign-in.`);
+      setForm(emptyPatientForm());
+      onCreated();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  };
+  return (
+    <Card title="Register a patient" icon={Users}>
+      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Patient identity & contact</p>
+        <Field label="Full legal name"><Input autoComplete="name" maxLength="100" value={form.name} onChange={change('name')} required /></Field>
+        <Field label="Email / patient login"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
+        <Field label="Temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={form.password} onChange={change('password')} required /><span className="text-xs font-normal text-slate-500">The patient will be required to replace it at first sign-in.</span></Field>
+        <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
+        <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
+        <Field label="Date of birth"><Input type="date" max={localDateValue()} value={form.dateOfBirth} onChange={change('dateOfBirth')} required />{calculateAge(form.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(form.dateOfBirth)} years (calculated)</span>}</Field>
+        <Field label="Sex (optional)"><Select value={form.sex} onChange={change('sex')}><option value="">Not specified</option>{['Female', 'Male', 'Intersex', 'Prefer not to say'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
+        <Field label="Blood group (if known)"><Select value={form.bloodGroup} onChange={change('bloodGroup')}><option value="">Not known</option>{bloodGroups.map((value) => <option key={value}>{value}</option>)}</Select></Field>
+        <Field label="Home address"><Textarea rows="2" maxLength="500" autoComplete="street-address" value={form.address} onChange={change('address')} /></Field>
+        <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Emergency contact</p>
+        <Field label="Contact name"><Input maxLength="100" value={form.emergencyContact.name} onChange={changeEmergencyContact('name')} /></Field>
+        <Field label="Relationship"><Input maxLength="50" value={form.emergencyContact.relationship} onChange={changeEmergencyContact('relationship')} placeholder="e.g. Parent, spouse" /></Field>
+        <Field label="Contact phone"><Input type="tel" maxLength="30" value={form.emergencyContact.phone} onChange={changeEmergencyContact('phone')} /></Field>
+        <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Medical history & baseline measurements</p>
+        <Field label="Known allergies"><Input value={form.allergies} onChange={change('allergies')} placeholder="Separate multiple entries with commas" /><span className="text-xs font-normal text-slate-500">Enter “None known” only after confirming with the patient.</span></Field>
+        <Field label="Ongoing conditions"><Input value={form.chronicConditions} onChange={change('chronicConditions')} placeholder="e.g. Diabetes, asthma" /></Field>
+        <Field label="Current medications"><Input value={form.currentMedications} onChange={change('currentMedications')} placeholder="Separate multiple entries with commas" /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Height (cm)"><Input type="number" min="30" max="250" step="0.1" value={form.heightCm} onChange={change('heightCm')} /></Field>
+          <Field label="Weight (kg)"><Input type="number" min="1" max="500" step="0.1" value={form.weightKg} onChange={change('weightKg')} /></Field>
+        </div>
+        <button className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2"><Plus className="h-4 w-4" />Create patient chart & login</button>
+      </form>
+    </Card>
+  );
+}
+
+function PatientPasswordReset({ patients, notify, onReset }) {
+  const [patientId, setPatientId] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const submit = async (event) => {
+    event.preventDefault();
+    if (password !== confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
+    try {
+      await api.post(`/patients/${patientId}/reset-password`, { password });
+      notify('Temporary password reset. The patient must change it at next sign-in.');
+      setPatientId('');
+      setPassword('');
+      setConfirmPassword('');
+      onReset();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  };
+  return (
+    <Card title="Reset patient password" icon={ShieldCheck}>
+      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-3">
+        <Field label="Patient"><Select required value={patientId} onChange={(event) => setPatientId(event.target.value)}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+        <Field label="New temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field>
+        <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></Field>
+        <button disabled={!patients.length} className="rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:opacity-50 dark:text-teal-300 sm:col-span-3">Reset and require password change</button>
+      </form>
+    </Card>
+  );
 }
 
 function PageTitle({ eyebrow, title, description, icon: Icon }) {
@@ -283,7 +521,7 @@ function PageTitle({ eyebrow, title, description, icon: Icon }) {
 }
 
 function PatientDashboard({ user, notify }) {
-  const { data, loading } = useLoad(notify, [
+  const { data, loading, error, refresh } = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
     { key: 'billing', path: '/billing' },
     { key: 'prescriptions', path: '/prescriptions' },
@@ -303,7 +541,7 @@ function PatientDashboard({ user, notify }) {
       <PageTitle eyebrow="Patient portal · read-only" title={`Hello, ${user.name}`} description="Review records and treatment information entered by your care team." icon={Activity} />
       <Card title="Your profile" icon={ShieldCheck}>
         <dl className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          {[['Unique Health ID', user.uhid], ['Age', age === null ? 'Not recorded' : `${age} years`], ['Date of birth', user.dateOfBirth ? new Date(user.dateOfBirth).toLocaleDateString() : 'Not recorded'], ['Sex', user.sex || 'Not recorded'], ['Blood group', user.bloodGroup || 'Not recorded'], ['Height', user.heightCm ? `${user.heightCm} cm` : 'Not recorded'], ['Weight', user.weightKg ? `${user.weightKg} kg` : 'Not recorded'], ['Phone', user.phone || 'Not added'], ['Email', user.email], ['Address', user.address || 'Not recorded']].map(([label, value]) => <div key={label}><dt className="text-slate-500">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>)}
+          {[['Unique Health ID', user.uhid], ['Age', age === null ? 'Not recorded' : `${age} years`], ['Date of birth', user.dateOfBirth ? formatDateOnly(user.dateOfBirth) : 'Not recorded'], ['Sex', user.sex || 'Not recorded'], ['Blood group', user.bloodGroup || 'Not recorded'], ['Height', user.heightCm ? `${user.heightCm} cm` : 'Not recorded'], ['Weight', user.weightKg ? `${user.weightKg} kg` : 'Not recorded'], ['Phone', user.phone || 'Not added'], ['Email', user.email], ['Address', user.address || 'Not recorded']].map(([label, value]) => <div key={label}><dt className="text-slate-500">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>)}
         </dl>
         <div className="mt-5 grid gap-4 border-t border-slate-100 pt-4 text-sm dark:border-slate-800 sm:grid-cols-2">
           <div><p className="font-semibold">Allergies</p><p className="mt-1 text-slate-500">{user.allergies?.length ? user.allergies.join(', ') : 'None recorded'}</p></div>
@@ -314,20 +552,20 @@ function PatientDashboard({ user, notify }) {
       </Card>
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Your appointments" icon={CalendarDays}>
-          {loading ? <p className="text-sm text-slate-500">Loading records…</p> : appointments.length === 0 ? <Empty /> : <div className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <div key={item._id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0"><div><p className="font-medium">{item.department} <span className="ml-1 rounded-full bg-teal-50 px-2 py-0.5 text-xs text-teal-700">{item.status}</span></p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p><p className="mt-1 text-xs text-slate-500">Doctor: {item.doctorId?.name || 'To be assigned'}</p><p className="mt-1 text-xs text-slate-500">Symptoms: {item.symptoms}</p></div></div>)}</div>}
+          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty /> : <div className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <div key={item._id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0"><div><p className="font-medium">{item.department} <span className="ml-1 rounded-full bg-teal-50 px-2 py-0.5 text-xs text-teal-700">{item.status}</span></p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p><p className="mt-1 text-xs text-slate-500">Doctor: {item.doctorId?.name || 'To be assigned'}</p><p className="mt-1 text-xs text-slate-500">Symptoms: {item.symptoms}</p></div></div>)}</div>}
         </Card>
         <Card title="Prescriptions" icon={ClipboardList}>
-          {prescriptions.length === 0 ? <Empty>No prescriptions have been added to your records.</Empty> : <div className="space-y-3">{prescriptions.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-semibold">{item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">Prescribed by {item.doctorId?.name || 'Doctor'} · {new Date(item.createdAt).toLocaleDateString()}</p><ul className="mt-3 space-y-2 text-sm">{item.medicines.map((medicine) => <li key={`${medicine.name}-${medicine.dosage}`}><span className="font-medium">{medicine.name}</span> · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.route && ` · ${medicine.route}`}{medicine.instructions && <span className="block text-xs text-slate-500">{medicine.instructions}</span>}</li>)}</ul>{item.instructions && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">Instructions: {item.instructions}</p>}{item.followUp && <p className="mt-2 text-xs font-medium text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}</article>)}</div>}
+          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been added to your records.</Empty> : <div className="space-y-3">{prescriptions.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-semibold">{item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">Prescribed by {item.doctorId?.name || 'Doctor'} · {new Date(item.createdAt).toLocaleDateString()}</p><ul className="mt-3 space-y-2 text-sm">{item.medicines.map((medicine, index) => <li key={`${item._id}-${index}`}><span className="font-medium">{medicine.name}</span> · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.route && ` · ${medicine.route}`}{medicine.instructions && <span className="block text-xs text-slate-500">{medicine.instructions}</span>}</li>)}</ul>{item.instructions && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">Instructions: {item.instructions}</p>}{item.followUp && <p className="mt-2 text-xs font-medium text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}</article>)}</div>}
         </Card>
         <Card title="Vital history" icon={Activity}>
-          {vitals.length === 0 ? <Empty>No measurements have been logged.</Empty> : <div className="space-y-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-xs">{item.notes}</p>}</div>)}</div>}
+          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No measurements have been logged.</Empty> : <div className="space-y-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-xs">{item.notes}</p>}</div>)}</div>}
         </Card>
       </div>
       <Card title="Your bills" icon={Receipt}>
-        {loading ? <p className="text-sm text-slate-500">Loading bills…</p> : <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><span className="font-medium">Total billed</span><span className="text-lg font-bold text-teal-700 dark:text-teal-300">{formatCurrency(totalBilledPaise)}</span></div>{bills.length === 0 ? <Empty>No bills have been issued.</Empty> : bills.map((bill) => <article key={bill._id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div><p className="font-semibold">{bill.description}</p><p className="mt-1 text-xs text-slate-500">Issued by {bill.createdBy?.name || 'Hospital administration'} · {new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></article>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><span className="font-medium">Total billed</span><span className="text-lg font-bold text-teal-700 dark:text-teal-300">{formatCurrency(totalBilledPaise)}</span></div>{bills.length === 0 ? <Empty>No bills have been issued.</Empty> : bills.map((bill) => <article key={bill._id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div><p className="font-semibold">{bill.description}</p><p className="mt-1 text-xs text-slate-500">Issued by {bill.createdBy?.name || 'Hospital administration'} · {new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></article>)}</div>}
       </Card>
       <Card title="Doctor visit notes" icon={ClipboardList}>
-        {clinicalNotes.length === 0 ? <Empty>No visit notes have been added to your chart.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/60"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{note.assessment}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p>{note.historyOfPresentIllness && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">History:</span> {note.historyOfPresentIllness}</p>}{note.examination && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Examination:</span> {note.examination}</p>}<p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Care plan:</span> {note.plan}</p>{note.followUp && <p className="mt-2 text-xs text-teal-700 dark:text-teal-300"><span className="font-semibold">Follow-up:</span> {note.followUp}</p>}<p className="mt-3 text-xs text-slate-500">Dr. {note.doctorId?.name || 'Care team'}</p></article>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No visit notes have been added to your chart.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/60"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{note.assessment}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p>{note.historyOfPresentIllness && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">History:</span> {note.historyOfPresentIllness}</p>}{note.examination && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Examination:</span> {note.examination}</p>}<p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Care plan:</span> {note.plan}</p>{note.followUp && <p className="mt-2 text-xs text-teal-700 dark:text-teal-300"><span className="font-semibold">Follow-up:</span> {note.followUp}</p>}<p className="mt-3 text-xs text-slate-500">Dr. {note.doctorId?.name || 'Care team'}</p></article>)}</div>}
       </Card>
       <p className="text-center text-xs text-slate-500">Your medical records are read-only. Contact your care team if something needs correction.</p>
     </main>
@@ -335,7 +573,7 @@ function PatientDashboard({ user, notify }) {
 }
 
 function DoctorDashboard({ user, notify }) {
-  const { data, loading, refresh } = useLoad(notify, [
+  const { data, loading, error, refresh } = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
     { key: 'patients', path: '/patients' },
     { key: 'prescriptions', path: '/prescriptions' },
@@ -403,8 +641,10 @@ function DoctorDashboard({ user, notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Doctor workspace" title={`Welcome, ${user.name}`} description={`${user.specialization || 'Clinical team'} · live appointments and patient records`} icon={Stethoscope} />
+      <PatientRegistrationForm notify={notify} onCreated={refresh} />
+      <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
       <Card title="OPD appointment queue" icon={CalendarDays} action={<Select className="w-auto" value={filter} onChange={(event) => setFilter(event.target.value)}>{['Scheduled', 'Completed', 'Cancelled', 'All'].map((item) => <option key={item}>{item}</option>)}</Select>}>
-        {loading ? <p className="text-sm text-slate-500">Loading appointments…</p> : visibleAppointments.length === 0 ? <Empty>No appointments match this status.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Symptoms</th><th className="pb-3">Triage</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{visibleAppointments.map((item) => <tr key={item._id}><td className="py-3"><p className="font-medium">{item.patientId?.name}</p><p className="text-xs text-slate-500">{item.patientId?.uhid}</p></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td className="max-w-48 truncate">{item.symptoms}</td><td><Select className="w-auto" value={item.triage} onChange={(event) => updateAppointment(item._id, { triage: event.target.value })}>{triageLevels.map((value) => <option key={value}>{value}</option>)}</Select></td><td><Select className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((value) => <option key={value}>{value}</option>)}</Select></td></tr>)}</tbody></table></div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : visibleAppointments.length === 0 ? <Empty>No appointments match this status.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Visit</th><th scope="col" className="pb-3">Symptoms</th><th scope="col" className="pb-3">Triage</th><th scope="col" className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{visibleAppointments.map((item) => <tr key={item._id}><td className="py-3"><p className="font-medium">{item.patientId?.name}</p><p className="text-xs text-slate-500">{item.patientId?.uhid}</p></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td className="max-w-48 truncate">{item.symptoms}</td><td><Select aria-label={`Triage for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.triage} onChange={(event) => updateAppointment(item._id, { triage: event.target.value })}>{triageLevels.map((value) => <option key={value}>{value}</option>)}</Select></td><td><Select aria-label={`Status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((value) => <option key={value}>{value}</option>)}</Select></td></tr>)}</tbody></table></div>}
       </Card>
       <Card title="Patient chart & safety summary" icon={ShieldCheck}>
         <Field label="Select patient"><Select value={profilePatientId} onChange={(event) => setProfilePatientId(event.target.value)}><option value="">Choose a patient to review chart details</option>{patients.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.uhid}</option>)}</Select></Field>
@@ -470,7 +710,7 @@ function DoctorDashboard({ user, notify }) {
 }
 
 function StaffDashboard({ notify }) {
-  const { data, loading, refresh } = useLoad(notify, [
+  const { data, loading, error, refresh } = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
     { key: 'patients', path: '/patients' },
     { key: 'doctors', path: '/doctors' },
@@ -509,19 +749,26 @@ function StaffDashboard({ notify }) {
         patientId: patientId ?? (nextStatus === 'Occupied' ? bed.patientId?._id : null),
       });
       notify('Bed assignment updated.');
+      setAssignment((value) => {
+        const next = { ...value };
+        delete next[bed._id];
+        return next;
+      });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
 
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
-      <PageTitle eyebrow="Medical staff workspace" title="Patient care coordination" description="Coordinate appointments and manage bed assignments. Patient and clinical records are entered by administrators and doctors." icon={Stethoscope} />
+      <PageTitle eyebrow="Medical staff workspace" title="Patient care coordination" description="Register patients, coordinate appointments, and manage bed assignments." icon={Stethoscope} />
+      <PatientRegistrationForm notify={notify} onCreated={refresh} />
+      <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Book an appointment" icon={CalendarDays}>
           <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
             <Field label="Patient"><Select required value={appointmentForm.patientId} onChange={change(setAppointmentForm, 'patientId')}><option value="">Select patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
-            <Field label="Department"><Select value={appointmentForm.department} onChange={change(setAppointmentForm, 'department')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
-            <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name} · {doctor.specialization}</option>)}</Select></Field>
+            <Field label="Department"><Select value={appointmentForm.department} onChange={(event) => setAppointmentForm((value) => ({ ...value, department: event.target.value, doctorId: '' }))}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
+            <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.filter((doctor) => doctor.specialization === appointmentForm.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></Field>
             <Field label="Triage"><Select value={appointmentForm.triage} onChange={change(setAppointmentForm, 'triage')}>{triageLevels.map((item) => <option key={item}>{item}</option>)}</Select></Field>
             <Field label="Appointment date"><Input type="date" min={localDateValue()} value={appointmentForm.date} onChange={change(setAppointmentForm, 'date')} required /><span className="text-xs font-normal text-slate-500">Appointments are available every day, including weekends and holidays.</span></Field>
             <Field label="One-hour appointment slot (24/7)"><Select value={appointmentForm.time} onChange={change(setAppointmentForm, 'time')} required><option value="">Select an available time</option>{appointmentSlots.map((slot) => {
@@ -539,17 +786,17 @@ function StaffDashboard({ notify }) {
         </Card>
       </div>
       <Card title={`OPD coordination queue · ${appointments.length}`} icon={CalendarDays}>
-        {loading ? <p className="text-sm text-slate-500">Loading appointments…</p> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Triage</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3"><p className="font-medium">{item.patientId?.name}</p><p className="text-xs text-slate-500">{item.patientId?.uhid}</p></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p><p className="max-w-56 truncate text-xs text-slate-500">{item.symptoms}</p></td><td><Select className="w-auto" value={item.doctorId?._id || ''} onChange={(event) => updateAppointment(item._id, { doctorId: event.target.value })}><option value="">Unassigned</option>{doctors.map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></td><td><Select className="w-auto" value={item.triage} onChange={(event) => updateAppointment(item._id, { triage: event.target.value })}>{triageLevels.map((value) => <option key={value}>{value}</option>)}</Select></td><td><Select className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((value) => <option key={value}>{value}</option>)}</Select></td></tr>)}</tbody></table></div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Visit</th><th scope="col" className="pb-3">Doctor</th><th scope="col" className="pb-3">Triage</th><th scope="col" className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3"><p className="font-medium">{item.patientId?.name}</p><p className="text-xs text-slate-500">{item.patientId?.uhid}</p></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p><p className="max-w-56 truncate text-xs text-slate-500">{item.symptoms}</p></td><td><Select aria-label={`Doctor for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.doctorId?._id || ''} onChange={(event) => updateAppointment(item._id, { doctorId: event.target.value })}><option value="">Unassigned</option>{doctors.filter((doctor) => doctor.specialization === item.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></td><td><Select aria-label={`Triage for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.triage} onChange={(event) => updateAppointment(item._id, { triage: event.target.value })}>{triageLevels.map((value) => <option key={value}>{value}</option>)}</Select></td><td><Select aria-label={`Status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((value) => <option key={value}>{value}</option>)}</Select></td></tr>)}</tbody></table></div>}
       </Card>
       <Card title={`Bed assignments · ${beds.length}`} icon={BedDouble}>
-        {beds.length === 0 ? <Empty>No beds are configured yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Bed</th><th className="pb-3">Ward</th><th className="pb-3">Patient</th><th className="pb-3">Status</th><th className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><button onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button></td></tr>)}</tbody></table></div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : beds.length === 0 ? <Empty>No beds are configured yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Bed</th><th scope="col" className="pb-3">Ward</th><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select aria-label={`Patient assigned to bed ${bed.bedNumber}`} value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select aria-label={`Status of bed ${bed.bedNumber}`} value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><button type="button" onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button></td></tr>)}</tbody></table></div>}
       </Card>
     </main>
   );
 }
 
 function AdminDashboard({ notify }) {
-  const { data, loading, refresh } = useLoad(notify, [
+  const { data, loading, error, refresh } = useLoad(notify, [
     { key: 'patients', path: '/patients' },
     { key: 'beds', path: '/beds' },
     { key: 'billing', path: '/billing' },
@@ -562,6 +809,7 @@ function AdminDashboard({ notify }) {
   const totals = data.beds?.totals || [];
   const appointments = data.appointments?.appointments || [];
   const bills = data.billing?.bills || [];
+  const doctors = data.doctors?.doctors || [];
   const wardTotals = wards.map((ward) => totals.find((item) => item._id === ward) || {
     _id: ward,
     total: 0,
@@ -569,44 +817,52 @@ function AdminDashboard({ notify }) {
     available: 0,
   });
   const staffMembers = data.staff?.staff || [];
-  const emptyPatientForm = {
-    name: '', email: '', password: '', phone: '', dateOfBirth: '', sex: '', bloodGroup: '', address: '',
-    emergencyContact: { name: '', relationship: '', phone: '' }, allergies: '', chronicConditions: '',
-    currentMedications: '', heightCm: '', weightKg: '',
-  };
-  const [patientForm, setPatientForm] = useState(emptyPatientForm);
-  const [staffForm, setStaffForm] = useState({ name: '', email: '', password: '', phone: '' });
+  const [staffForm, setStaffForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
+  const [doctorForm, setDoctorForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
   const [billForm, setBillForm] = useState(newBillForm);
   const [assignment, setAssignment] = useState({});
 
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
-  const changeEmergencyContact = (key) => (event) => setPatientForm((value) => ({
-    ...value,
-    emergencyContact: { ...value.emergencyContact, [key]: event.target.value },
-  }));
-  const registerPatient = async (event) => {
+  const createStaffAccount = async (event) => {
     event.preventDefault();
+    if (staffForm.password !== staffForm.confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
     try {
-      const { data: result } = await api.post('/patients', {
-        ...patientForm,
-        allergies: parseList(patientForm.allergies),
-        chronicConditions: parseList(patientForm.chronicConditions),
-        currentMedications: parseList(patientForm.currentMedications),
-      });
-      notify(`Patient registered with health ID ${result.patient.uhid}.`);
-      setPatientForm(emptyPatientForm);
+      const staffData = { ...staffForm };
+      delete staffData.confirmPassword;
+      const { data: result } = await api.post('/staff', staffData);
+      notify(`Medical staff account created for ${result.staff.name}.`);
+      setStaffForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
-  const createStaffAccount = async (event) => {
+  const createDoctorAccount = async (event) => {
     event.preventDefault();
+    if (doctorForm.password !== doctorForm.confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
     try {
-      const { data: result } = await api.post('/staff', staffForm);
-      notify(`Medical staff account created for ${result.staff.name}.`);
-      setStaffForm({ name: '', email: '', password: '', phone: '' });
+      const doctorData = { ...doctorForm };
+      delete doctorData.confirmPassword;
+      const { data: result } = await api.post('/doctors', doctorData);
+      notify(`Doctor account created for ${result.doctor.name}. They must change the temporary password at first sign-in.`);
+      setDoctorForm({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
+  };
+  const updateDoctorDepartment = async (doctorId, specialization) => {
+    try {
+      await api.put(`/doctors/${doctorId}`, { specialization });
+      notify('Doctor department updated.');
+      refresh();
+    } catch (error) {
+      notify(error.message, 'error');
+      refresh();
+    }
   };
   const createBed = async (event) => {
     event.preventDefault();
@@ -634,6 +890,11 @@ function AdminDashboard({ notify }) {
       const nextStatus = status ?? (patientId ? 'Occupied' : 'Available');
       await api.put(`/beds/${bed._id}`, { status: nextStatus, patientId: patientId ?? (nextStatus === 'Occupied' ? bed.patientId?._id : null) });
       notify('Bed assignment updated.');
+      setAssignment((value) => {
+        const next = { ...value };
+        delete next[bed._id];
+        return next;
+      });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
@@ -645,10 +906,10 @@ function AdminDashboard({ notify }) {
     } catch (error) { notify(error.message, 'error'); }
   };
   const deletePatient = async (patient) => {
-    if (!window.confirm(`Delete ${patient.name} and their appointments, bills, clinical notes, prescriptions, vitals, and bed assignment?`)) return;
+    if (!window.confirm(`Deactivate ${patient.name}'s account? Their patient record and medical history will be retained.`)) return;
     try {
       await api.delete(`/patients/${patient._id}`);
-      notify('Patient and related records deleted.');
+      notify('Patient account deactivated; medical history retained.');
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
@@ -656,39 +917,28 @@ function AdminDashboard({ notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Administration" title="Hospital command center" description="Register patients and manage beds using live MongoDB records." icon={ShieldCheck} />
+      <LoadState loading={loading} error={error} onRetry={refresh} />
       <div className="grid gap-3 sm:grid-cols-3">
         <Card title="Registered patients" icon={Users}><p className="text-3xl font-bold">{patients.length}</p><p className="mt-1 text-xs text-slate-500">Active patient charts</p></Card>
         <Card title="Appointments" icon={CalendarDays}><p className="text-3xl font-bold">{appointments.length}</p><p className="mt-1 text-xs text-slate-500">Scheduled and historical visits</p></Card>
         <Card title="Care team" icon={Stethoscope}><p className="text-3xl font-bold">{staffMembers.length + (data.doctors?.doctors?.length || 0)}</p><p className="mt-1 text-xs text-slate-500">{staffMembers.length} medical staff · {data.doctors?.doctors?.length || 0} doctors</p></Card>
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {wardTotals.map((item) => <Card key={item._id} title={item._id} icon={BedDouble}><div className="flex items-end justify-between"><p className="text-3xl font-bold">{item.occupied}<span className="text-base font-medium text-slate-400"> / {item.total}</span></p><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">{item.available} available</span></div></Card>)}
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Register a patient" icon={Users}>
-          <form onSubmit={registerPatient} className="grid gap-3 sm:grid-cols-2">
-            <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Patient identity & contact</p>
-            <Field label="Full legal name"><Input autoComplete="name" maxLength="100" value={patientForm.name} onChange={change(setPatientForm, 'name')} required /></Field>
-            <Field label="Email / patient login"><Input type="email" autoComplete="email" value={patientForm.email} onChange={change(setPatientForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" autoComplete="new-password" value={patientForm.password} onChange={change(setPatientForm, 'password')} required /><span className="text-xs font-normal text-slate-500">Share securely; the patient can sign in with this account.</span></Field>
-            <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={patientForm.phone} onChange={change(setPatientForm, 'phone')} required /></Field>
-            <Field label="Date of birth"><Input type="date" max={new Date().toISOString().slice(0, 10)} value={patientForm.dateOfBirth} onChange={change(setPatientForm, 'dateOfBirth')} required />{calculateAge(patientForm.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(patientForm.dateOfBirth)} years (calculated)</span>}</Field>
-            <Field label="Sex (optional)"><Select value={patientForm.sex} onChange={change(setPatientForm, 'sex')}><option value="">Not specified</option>{['Female', 'Male', 'Intersex', 'Prefer not to say'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
-            <Field label="Blood group (if known)"><Select value={patientForm.bloodGroup} onChange={change(setPatientForm, 'bloodGroup')}><option value="">Not known</option>{bloodGroups.map((value) => <option key={value}>{value}</option>)}</Select></Field>
-            <Field label="Home address"><Textarea rows="2" maxLength="500" autoComplete="street-address" value={patientForm.address} onChange={change(setPatientForm, 'address')} /></Field>
-            <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Emergency contact</p>
-            <Field label="Contact name"><Input maxLength="100" value={patientForm.emergencyContact.name} onChange={changeEmergencyContact('name')} /></Field>
-            <Field label="Relationship"><Input maxLength="50" value={patientForm.emergencyContact.relationship} onChange={changeEmergencyContact('relationship')} placeholder="e.g. Parent, spouse" /></Field>
-            <Field label="Contact phone"><Input type="tel" maxLength="30" value={patientForm.emergencyContact.phone} onChange={changeEmergencyContact('phone')} /></Field>
-            <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Medical history & baseline measurements</p>
-            <Field label="Known allergies"><Input value={patientForm.allergies} onChange={change(setPatientForm, 'allergies')} placeholder="Separate multiple entries with commas" /><span className="text-xs font-normal text-slate-500">Enter “None known” only after confirming with the patient.</span></Field>
-            <Field label="Ongoing conditions"><Input value={patientForm.chronicConditions} onChange={change(setPatientForm, 'chronicConditions')} placeholder="e.g. Diabetes, asthma" /></Field>
-            <Field label="Current medications"><Input value={patientForm.currentMedications} onChange={change(setPatientForm, 'currentMedications')} placeholder="Separate multiple entries with commas" /></Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Height (cm)"><Input type="number" min="30" max="250" step="0.1" value={patientForm.heightCm} onChange={change(setPatientForm, 'heightCm')} /></Field>
-              <Field label="Weight (kg)"><Input type="number" min="1" max="500" step="0.1" value={patientForm.weightKg} onChange={change(setPatientForm, 'weightKg')} /></Field>
-            </div>
-            <button className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2"><Plus className="h-4 w-4" />Create patient chart & login</button>
+        <PatientRegistrationForm notify={notify} onCreated={refresh} />
+        <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
+        <Card title="Create doctor account" icon={Stethoscope}>
+          <form onSubmit={createDoctorAccount} className="grid gap-3 sm:grid-cols-2">
+            <Field label="Full name"><Input autoComplete="name" maxLength="100" value={doctorForm.name} onChange={change(setDoctorForm, 'name')} required /></Field>
+            <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={doctorForm.email} onChange={change(setDoctorForm, 'email')} required /></Field>
+            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={doctorForm.password} onChange={change(setDoctorForm, 'password')} required /></Field>
+            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={doctorForm.confirmPassword} onChange={change(setDoctorForm, 'confirmPassword')} required /></Field>
+            <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={doctorForm.phone} onChange={change(setDoctorForm, 'phone')} /></Field>
+            <Field label="Department"><Select value={doctorForm.specialization} onChange={change(setDoctorForm, 'specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
+            <p className="text-xs text-slate-500 sm:col-span-2">Doctors change this temporary password on first sign-in. Only an administrator can create doctor accounts.</p>
+            <button className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />Create doctor login</button>
           </form>
         </Card>
         <Card title="Create medical staff account" icon={Stethoscope}>
@@ -696,9 +946,13 @@ function AdminDashboard({ notify }) {
             <Field label="Full name"><Input value={staffForm.name} onChange={change(setStaffForm, 'name')} required /></Field>
             <Field label="Email"><Input type="email" value={staffForm.email} onChange={change(setStaffForm, 'email')} required /></Field>
             <Field label="Temporary password"><Input type="password" minLength="8" value={staffForm.password} onChange={change(setStaffForm, 'password')} required /></Field>
+            <Field label="Confirm temporary password"><Input type="password" minLength="8" autoComplete="new-password" value={staffForm.confirmPassword} onChange={change(setStaffForm, 'confirmPassword')} required /></Field>
             <Field label="Phone"><Input value={staffForm.phone} onChange={change(setStaffForm, 'phone')} /></Field>
             <button className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />Create staff login</button>
           </form>
+        </Card>
+        <Card title="Doctor departments" icon={Stethoscope}>
+          {doctors.length === 0 ? <Empty>No doctor accounts are registered.</Empty> : <div className="space-y-3">{doctors.map((doctor) => <Field key={doctor._id} label={doctor.name}><Select value={doctor.specialization} onChange={(event) => updateDoctorDepartment(doctor._id, event.target.value)}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>)}</div>}
         </Card>
         <Card title="Add a hospital bed" icon={BedDouble}>
           <form onSubmit={createBed} className="grid gap-3 sm:grid-cols-2">
@@ -709,7 +963,7 @@ function AdminDashboard({ notify }) {
         </Card>
       </div>
       <Card title="Bed management" icon={BedDouble}>
-        {loading ? <p className="text-sm text-slate-500">Loading beds…</p> : beds.length === 0 ? <Empty>No beds are registered yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Bed</th><th className="pb-3">Ward</th><th className="pb-3">Patient</th><th className="pb-3">Status</th><th className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><div className="flex items-center gap-2"><button onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button><button onClick={() => deleteBed(bed._id)} className="text-xs text-rose-600 hover:underline">Remove</button></div></td></tr>)}</tbody></table></div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : beds.length === 0 ? <Empty>No beds are registered yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Bed</th><th scope="col" className="pb-3">Ward</th><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select aria-label={`Patient assigned to bed ${bed.bedNumber}`} value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select aria-label={`Status of bed ${bed.bedNumber}`} value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><div className="flex items-center gap-2"><button type="button" onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button><button type="button" onClick={() => deleteBed(bed._id)} className="text-xs text-rose-600 hover:underline">Remove</button></div></td></tr>)}</tbody></table></div>}
       </Card>
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Issue a patient bill" icon={Receipt}>

@@ -20,4 +20,12 @@ const appointmentSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
+appointmentSchema.index(
+  { doctorId: 1, date: 1, time: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'Scheduled', doctorId: { $type: 'objectId' } },
+  },
+);
+
 export default mongoose.models.Appointment || mongoose.model('Appointment', appointmentSchema);

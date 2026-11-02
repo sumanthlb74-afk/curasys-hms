@@ -40,6 +40,19 @@ test('user schema accepts the medical staff role', async () => {
   assert.equal(error, null);
 });
 
+test('user schema defaults new accounts to active and current-password sessions', () => {
+  const user = new User({
+    name: 'Test User',
+    email: 'user@example.test',
+    password: 'a-secure-password',
+    role: 'patient',
+    uhid: 'CUR-2026-123456789ABC',
+  });
+  assert.equal(user.isActive, true);
+  assert.equal(user.mustChangePassword, false);
+  assert.equal(user.sessionVersion, 0);
+});
+
 test('patient profile validates demographics and medical history fields', async () => {
   const patient = new User({
     name: 'Test Patient',
@@ -87,6 +100,17 @@ test('appointment schema validates role workflow status and time', async () => {
     symptoms: 'Checkup',
   }));
   assert.ok(nonHourlyTime.errors.time);
+});
+
+test('scheduled appointments have a unique doctor and time-slot index', () => {
+  const slotIndex = Appointment.schema.indexes().find(([fields, options]) => (
+    fields.doctorId === 1 && fields.date === 1 && fields.time === 1 && options.unique
+  ));
+  assert.ok(slotIndex);
+  assert.deepEqual(slotIndex[1].partialFilterExpression, {
+    status: 'Scheduled',
+    doctorId: { $type: 'objectId' },
+  });
 });
 
 test('bed schema rejects unsupported ward and status values', async () => {
