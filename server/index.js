@@ -209,7 +209,7 @@ function validDate(value) {
 
 function isFutureAppointment(date, time) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Kolkata',
+    timeZone: process.env.HOSPITAL_TZ || 'Asia/Kolkata',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -1158,6 +1158,10 @@ app.use((error, _request, response, next) => {
     return;
   }
   if (error.code === 11000) {
+    if (error.keyPattern?.doctorId && error.keyPattern?.date && error.keyPattern?.time) {
+      response.status(409).json({ error: 'That slot was just taken. Choose another time.' });
+      return;
+    }
     response.status(409).json({ error: 'The submitted identifier or schedule conflicts with an existing record.' });
     return;
   }
@@ -1185,6 +1189,11 @@ app.use((error, _request, response, next) => {
 export async function startServer() {
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required. Add your MongoDB Atlas connection string to server/.env.');
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('Set JWT_SECRET to a random secret of at least 32 characters in server/.env.');
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: process.env.HOSPITAL_TZ || 'Asia/Kolkata' }).format(new Date());
+  } catch {
+    throw new Error('HOSPITAL_TZ must be a valid IANA time zone.');
+  }
   await mongoose.connect(process.env.MONGODB_URI);
   const port = Number(process.env.PORT || process.env.API_PORT || 3001);
   return app.listen(port, '0.0.0.0', () => {
