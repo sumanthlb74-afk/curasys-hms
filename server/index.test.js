@@ -51,3 +51,17 @@ test('public registration cannot create doctor accounts', async () => {
   assert.equal(response.status, 403);
   assert.match((await response.json()).error, /administrator/i);
 });
+
+test('login limits repeated attempts for the same email and IP', async () => {
+  const request = () => fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'limited@example.test', password: '' }),
+  });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal((await request()).status, 400);
+  }
+  const limitedResponse = await request();
+  assert.equal(limitedResponse.status, 429);
+  assert.match((await limitedResponse.json()).error, /too many authentication attempts/i);
+});
