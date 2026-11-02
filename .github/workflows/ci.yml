@@ -11,7 +11,7 @@ jobs:
       MONGODB_TEST_URI: mongodb://127.0.0.1:27017/curasys_hms_test
     services:
       mongodb:
-        image: mongo:8
+        image: mongo:8.0
         ports:
           - 27017:27017
         options: >-
