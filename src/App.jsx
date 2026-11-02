@@ -195,7 +195,7 @@ function AppRoutes() {
       setUser(null);
       setInitializing(false);
       setAuthError(null);
-      notify('Your session expired. Sign in again to continue.', 'error');
+      notify('Your session expired. Please sign in again.', 'error');
       navigate('/login', { replace: true });
     };
     window.addEventListener('curasys:session-expired', handleSessionExpired);
@@ -347,14 +347,21 @@ function ChangePasswordPage({ user, onAuth, notify, required = false }) {
 function AuthPage({ onAuth, notify }) {
   const [mode, setMode] = useState('login');
   const [loading, setLoading] = useState(false);
+  const [showWakeMessage, setShowWakeMessage] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '' });
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  useEffect(() => {
+    if (!loading) return undefined;
+    const timer = window.setTimeout(() => setShowWakeMessage(true), 4000);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
   const submit = async (event) => {
     event.preventDefault();
     if (mode === 'register' && form.password !== form.confirmPassword) {
       notify('The passwords do not match.', 'error');
       return;
     }
+    setShowWakeMessage(false);
     setLoading(true);
     try {
       const isRegister = mode === 'register';
@@ -390,6 +397,7 @@ function AuthPage({ onAuth, notify }) {
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
           {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
           {isRegister && <p className="text-xs leading-relaxed text-slate-500">This one-time setup is only available before the first administrator account is created. Administrators create all doctor, staff, and patient accounts.</p>}
+          {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">The server may be waking up. This can take up to a minute.</p>}
           <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : 'Sign in securely'}</button>
         </form>
         <p className="mt-5 text-center text-xs text-slate-500">Use fictional information only. This school project is not for real patient data.</p>

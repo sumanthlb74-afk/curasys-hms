@@ -317,7 +317,7 @@ app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, r
   }
   const user = await User.findById(request.user.id).select('+password');
   if (!user || !(await user.verifyPassword(currentPassword))) {
-    response.status(401).json({ error: 'Your current password is incorrect.' });
+    response.status(400).json({ error: 'Your current password is incorrect.' });
     return;
   }
   if (currentPassword === newPassword) {
