@@ -64,6 +64,13 @@ function parseList(value) {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
+function filterPatientList(patients, query) {
+  const search = query.trim().toLowerCase();
+  if (!search) return patients;
+  return patients.filter((patient) => [patient.name, patient.uhid, patient.email]
+    .some((value) => value?.toLowerCase().includes(search)));
+}
+
 function generateTemporaryPassword() {
   const randomBytes = crypto.getRandomValues(new Uint8Array(24));
   return btoa(String.fromCharCode(...randomBytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -168,6 +175,20 @@ function LoadState({ loading, error, onRetry }) {
     );
   }
   return null;
+}
+
+function PaginationControls({ page, total, limit, onPageChange }) {
+  const pageCount = Math.max(1, Math.ceil(total / limit));
+  if (pageCount <= 1) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm text-slate-500">
+      <span>Page {page} of {pageCount} · {total} records</span>
+      <div className="flex gap-2">
+        <button type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)} className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-50 dark:border-slate-700">Previous</button>
+        <button type="button" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)} className="rounded-lg border border-slate-300 px-3 py-1.5 disabled:opacity-50 dark:border-slate-700">Next</button>
+      </div>
+    </div>
+  );
 }
 
 function App() {
@@ -590,15 +611,18 @@ function PatientDashboard({ user, notify }) {
 }
 
 function DoctorDashboard({ user, notify }) {
+  const [patientSearch, setPatientSearch] = useState('');
+  const [patientPage, setPatientPage] = useState(1);
   const { data, loading, error, refresh } = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
-    { key: 'patients', path: '/patients' },
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'prescriptions', path: '/prescriptions' },
     { key: 'vitals', path: '/vitals' },
     { key: 'clinicalNotes', path: '/clinical-notes' },
   ]);
   const appointments = data.appointments?.appointments || [];
-  const patients = data.patients?.patients || [];
+  const allPatients = data.patients?.patients || [];
+  const patients = filterPatientList(allPatients, patientSearch);
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
@@ -658,6 +682,8 @@ function DoctorDashboard({ user, notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Doctor workspace" title={`Welcome, ${user.name}`} description={`${user.specialization || 'Clinical team'} · live appointments and patient records`} icon={Stethoscope} />
+      <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
+      <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
       <Card title="OPD appointment queue" icon={CalendarDays} action={<Select className="w-auto" value={filter} onChange={(event) => setFilter(event.target.value)}>{['Scheduled', 'Completed', 'Cancelled', 'All'].map((item) => <option key={item}>{item}</option>)}</Select>}>
@@ -727,14 +753,17 @@ function DoctorDashboard({ user, notify }) {
 }
 
 function StaffDashboard({ notify }) {
+  const [patientSearch, setPatientSearch] = useState('');
+  const [patientPage, setPatientPage] = useState(1);
   const { data, loading, error, refresh: loadData } = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
-    { key: 'patients', path: '/patients' },
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'doctors', path: '/doctors' },
     { key: 'beds', path: '/beds' },
   ]);
   const appointments = data.appointments?.appointments || [];
-  const patients = data.patients?.patients || [];
+  const allPatients = data.patients?.patients || [];
+  const patients = filterPatientList(allPatients, patientSearch);
   const doctors = data.doctors?.doctors || [];
   const beds = data.beds?.beds || [];
   const [appointmentForm, setAppointmentForm] = useState({
@@ -782,6 +811,8 @@ function StaffDashboard({ notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Medical staff workspace" title="Patient care coordination" description="Register patients, coordinate appointments, and manage bed assignments." icon={Stethoscope} />
+      <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
+      <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
       <div className="grid gap-6 lg:grid-cols-2">
@@ -817,8 +848,10 @@ function StaffDashboard({ notify }) {
 }
 
 function AdminDashboard({ notify }) {
+  const [patientSearch, setPatientSearch] = useState('');
+  const [patientPage, setPatientPage] = useState(1);
   const { data, loading, error, refresh: loadData } = useLoad(notify, [
-    { key: 'patients', path: '/patients' },
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'beds', path: '/beds' },
     { key: 'billing', path: '/billing' },
     { key: 'appointments', path: '/appointments' },
@@ -826,7 +859,8 @@ function AdminDashboard({ notify }) {
     { key: 'doctors', path: '/doctors' },
     { key: 'audit', path: '/audit' },
   ]);
-  const patients = data.patients?.patients || [];
+  const allPatients = data.patients?.patients || [];
+  const patients = filterPatientList(allPatients, patientSearch);
   const beds = data.beds?.beds || [];
   const totals = data.beds?.totals || [];
   const appointments = data.appointments?.appointments || [];
@@ -950,6 +984,8 @@ function AdminDashboard({ notify }) {
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Administration" title="Hospital command center" description="Register patients and manage beds using live MongoDB records." icon={ShieldCheck} />
       <LoadState loading={loading} error={error} onRetry={refresh} />
+      <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory and pickers" /></Field>
+      <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <div className="grid gap-3 sm:grid-cols-3">
         <Card title="Registered patients" icon={Users}><p className="text-3xl font-bold">{patients.length}</p><p className="mt-1 text-xs text-slate-500">Active patient charts</p></Card>
         <Card title="Appointments" icon={CalendarDays}><p className="text-3xl font-bold">{appointments.length}</p><p className="mt-1 text-xs text-slate-500">Scheduled and historical visits</p></Card>

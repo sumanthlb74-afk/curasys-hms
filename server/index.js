@@ -165,6 +165,57 @@ async function audit(request, {
   });
 }
 
+function getPagination(request, response) {
+  const pageValue = request.query.page ?? '1';
+  const limitValue = request.query.limit ?? '50';
+  const query = request.query.q ?? '';
+  if (
+    typeof pageValue !== 'string' || !/^\d+$/.test(pageValue)
+    || typeof limitValue !== 'string' || !/^\d+$/.test(limitValue)
+    || typeof query !== 'string' || query.length > 100
+  ) {
+    response.status(400).json({ error: 'Use positive page/limit values and a search query of at most 100 characters.' });
+    return null;
+  }
+  const page = Number(pageValue);
+  const limit = Number(limitValue);
+  if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(limit) || limit < 1) {
+    response.status(400).json({ error: 'Page and limit must be positive integers.' });
+    return null;
+  }
+  return { page, limit: Math.min(limit, 200), q: query.trim() };
+}
+
+function escapedRegex(value) {
+  return new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+}
+
+async function addPatientSearch(filter, query) {
+  if (!query) return filter;
+  const pattern = escapedRegex(query);
+  const matchingIds = await User.distinct('_id', {
+    role: 'patient',
+    isActive: { $ne: false },
+    $or: [{ name: pattern }, { uhid: pattern }, { email: pattern }],
+  });
+  if (filter.patientId !== undefined) {
+    const patientIdFilter = filter.patientId;
+    delete filter.patientId;
+    filter.$and = [...(filter.$and || []), { patientId: patientIdFilter }, { patientId: { $in: matchingIds } }];
+  } else {
+    filter.patientId = { $in: matchingIds };
+  }
+  return filter;
+}
+
+async function listPage(Model, filter, { page, limit }, { sort, populate = [], select }) {
+  let query = Model.find(filter).sort(sort).skip((page - 1) * limit).limit(limit);
+  if (select) query = query.select(select);
+  for (const [field, selection] of populate) query = query.populate(field, selection);
+  const [items, total] = await Promise.all([query.lean(), Model.countDocuments(filter)]);
+  return { items, total, page };
+}
+
 function validObjectId(value) {
   return mongoose.isValidObjectId(value);
 }
@@ -418,19 +469,26 @@ app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (requ
 }));
 
 app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+  const pagination = getPagination(request, response);
+  if (!pagination) return;
   const filter = { role: 'patient', isActive: { $ne: false } };
   if (request.user.role === 'doctor') filter._id = { $in: await doctorPatientIds(request.user.id) };
+  if (pagination.q) {
+    const pattern = escapedRegex(pagination.q);
+    filter.$or = [{ name: pattern }, { uhid: pattern }, { email: pattern }];
+  }
   const patientFields = request.user.role === 'staff'
     ? 'name email uhid phone'
     : 'name email uhid phone dateOfBirth sex bloodGroup address emergencyContact allergies chronicConditions currentMedications heightCm weightKg';
-  const patients = await User.find(filter)
-    .select(patientFields)
-    .sort({ name: 1 })
-    .lean();
+  const { items, total, page } = await listPage(User, filter, pagination, {
+    sort: { name: 1 },
+    select: patientFields,
+  });
+  const patients = items;
   if (request.user.role === 'doctor' || request.user.role === 'staff') {
     await audit(request, { action: 'patients.listed', entityType: 'patient' });
   }
-  response.json({ patients });
+  response.json({ patients, items: patients, total, page });
 }));
 
 app.get('/api/audit', authenticate, allow('admin'), asyncRoute(async (request, response) => {
@@ -629,17 +687,19 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
 }));
 
 app.get('/api/appointments', authenticate, asyncRoute(async (request, response) => {
+  const pagination = getPagination(request, response);
+  if (!pagination) return;
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
       ? { doctorId: request.user.id }
       : {};
-  const appointments = await Appointment.find(filter)
-    .populate('patientId', 'name uhid phone')
-    .populate('doctorId', 'name specialization')
-    .sort({ date: 1, time: 1 })
-    .lean();
-  response.json({ appointments });
+  await addPatientSearch(filter, pagination.q);
+  const result = await listPage(Appointment, filter, pagination, {
+    sort: { date: 1, time: 1 },
+    populate: [['patientId', 'name uhid phone'], ['doctorId', 'name specialization']],
+  });
+  response.json({ appointments: result.items, ...result });
 }));
 
 app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(async (request, response) => {
@@ -898,13 +958,15 @@ app.delete('/api/beds/:id', authenticate, allow('admin'), asyncRoute(async (requ
 }));
 
 app.get('/api/billing', authenticate, allow('patient', 'admin'), asyncRoute(async (request, response) => {
+  const pagination = getPagination(request, response);
+  if (!pagination) return;
   const filter = request.user.role === 'patient' ? { patientId: request.user.id } : {};
-  const bills = await Billing.find(filter)
-    .populate('patientId', 'name uhid')
-    .populate('createdBy', 'name')
-    .sort({ createdAt: -1 })
-    .lean();
-  response.json({ bills });
+  await addPatientSearch(filter, pagination.q);
+  const result = await listPage(Billing, filter, pagination, {
+    sort: { createdAt: -1 },
+    populate: [['patientId', 'name uhid'], ['createdBy', 'name']],
+  });
+  response.json({ bills: result.items, ...result });
 }));
 
 app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request, response) => {
@@ -937,29 +999,33 @@ app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request
 }));
 
 app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
+  const pagination = getPagination(request, response);
+  if (!pagination) return;
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
       ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
       : {};
-  const prescriptions = await Prescription.find(filter)
-    .populate('patientId', 'name uhid')
-    .populate('doctorId', 'name specialization')
-    .sort({ createdAt: -1 })
-    .lean();
-  response.json({ prescriptions });
+  await addPatientSearch(filter, pagination.q);
+  const result = await listPage(Prescription, filter, pagination, {
+    sort: { createdAt: -1 },
+    populate: [['patientId', 'name uhid'], ['doctorId', 'name specialization']],
+  });
+  response.json({ prescriptions: result.items, ...result });
 }));
 
 app.get('/api/clinical-notes', authenticate, allow('patient', 'doctor'), asyncRoute(async (request, response) => {
+  const pagination = getPagination(request, response);
+  if (!pagination) return;
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : { patientId: { $in: await doctorPatientIds(request.user.id) } };
-  const clinicalNotes = await ClinicalNote.find(filter)
-    .populate('patientId', 'name uhid')
-    .populate('doctorId', 'name specialization')
-    .sort({ createdAt: -1 })
-    .lean();
-  response.json({ clinicalNotes });
+  await addPatientSearch(filter, pagination.q);
+  const result = await listPage(ClinicalNote, filter, pagination, {
+    sort: { createdAt: -1 },
+    populate: [['patientId', 'name uhid'], ['doctorId', 'name specialization']],
+  });
+  response.json({ clinicalNotes: result.items, ...result });
 }));
 
 app.post('/api/clinical-notes', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
@@ -1135,17 +1201,19 @@ app.delete('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(a
 }));
 
 app.get('/api/vitals', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
+  const pagination = getPagination(request, response);
+  if (!pagination) return;
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
       ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
       : {};
-  const vitals = await Vital.find(filter)
-    .populate('patientId', 'name uhid')
-    .populate('recordedBy', 'name role')
-    .sort({ createdAt: -1 })
-    .lean();
-  response.json({ vitals });
+  await addPatientSearch(filter, pagination.q);
+  const result = await listPage(Vital, filter, pagination, {
+    sort: { createdAt: -1 },
+    populate: [['patientId', 'name uhid'], ['recordedBy', 'name role']],
+  });
+  response.json({ vitals: result.items, ...result });
 }));
 
 app.post('/api/vitals', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
