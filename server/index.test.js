@@ -77,6 +77,21 @@ test('public registration cannot create doctor accounts', async () => {
   assert.match((await response.json()).error, /administrator/i);
 });
 
+test('administrator setup rejects an invalid registration key', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Test Admin',
+      email: 'admin@example.test',
+      password: 'a-secure-password',
+      role: 'admin',
+      adminRegistrationKey: 'incorrect-key',
+    }),
+  });
+  assert.equal(response.status, 403);
+});
+
 test('new passwords over bcrypt’s 72-byte limit are rejected before account creation', async () => {
   const response = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',

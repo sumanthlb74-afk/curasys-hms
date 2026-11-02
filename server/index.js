@@ -274,7 +274,12 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     response.status(403).json({ error: 'Only the project administrator can be registered through this one-time setup.' });
     return;
   }
-  if (!process.env.ADMIN_REGISTRATION_KEY || adminRegistrationKey !== process.env.ADMIN_REGISTRATION_KEY) {
+  const expectedKey = Buffer.from(process.env.ADMIN_REGISTRATION_KEY || '', 'utf8');
+  const providedKey = Buffer.from(typeof adminRegistrationKey === 'string' ? adminRegistrationKey : '', 'utf8');
+  const validRegistrationKey = expectedKey.length > 0
+    && expectedKey.length === providedKey.length
+    && crypto.timingSafeEqual(expectedKey, providedKey);
+  if (!validRegistrationKey) {
     response.status(403).json({ error: 'Admin registration requires the private ADMIN_REGISTRATION_KEY configured by the project owner.' });
     return;
   }

@@ -387,7 +387,7 @@ function AuthPage({ onAuth, notify }) {
           <p className="mt-1 text-sm text-slate-500">Hospital information system</p>
         </div>
         <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
-          {['login', 'register'].map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item === 'register' ? 'Initial admin setup' : 'Sign in'}</button>)}
+          {['login', 'register'].map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item === 'register' ? 'Administrator setup' : 'Sign in'}</button>)}
         </div>
         <form onSubmit={submit} className="grid gap-4">
           {isRegister && <Field label="Full name"><Input value={form.name} onChange={change('name')} autoComplete="name" required maxLength={100} /></Field>}
