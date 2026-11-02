@@ -727,7 +727,7 @@ function DoctorDashboard({ user, notify }) {
 }
 
 function StaffDashboard({ notify }) {
-  const { data, loading, error, refresh } = useLoad(notify, [
+  const { data, loading, error, refresh: loadData } = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
     { key: 'patients', path: '/patients' },
     { key: 'doctors', path: '/doctors' },
@@ -741,6 +741,10 @@ function StaffDashboard({ notify }) {
     patientId: '', doctorId: '', department: departments[0], date: '', time: '', symptoms: '', triage: 'OPD Routine',
   });
   const [assignment, setAssignment] = useState({});
+  const refresh = useCallback(() => {
+    setAssignment({});
+    loadData();
+  }, [loadData, setAssignment]);
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
   const bookAppointment = async (event) => {
     event.preventDefault();
@@ -813,7 +817,7 @@ function StaffDashboard({ notify }) {
 }
 
 function AdminDashboard({ notify }) {
-  const { data, loading, error, refresh } = useLoad(notify, [
+  const { data, loading, error, refresh: loadData } = useLoad(notify, [
     { key: 'patients', path: '/patients' },
     { key: 'beds', path: '/beds' },
     { key: 'billing', path: '/billing' },
@@ -839,6 +843,10 @@ function AdminDashboard({ notify }) {
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
   const [billForm, setBillForm] = useState(newBillForm);
   const [assignment, setAssignment] = useState({});
+  const refresh = useCallback(() => {
+    setAssignment({});
+    loadData();
+  }, [loadData, setAssignment]);
 
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
   const createStaffAccount = async (event) => {

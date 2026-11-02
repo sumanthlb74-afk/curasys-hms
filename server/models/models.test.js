@@ -130,6 +130,16 @@ test('bed schema rejects unsupported ward and status values', async () => {
   assert.ok(error.errors.status);
 });
 
+test('occupied beds have a unique patient assignment index', () => {
+  const patientAssignmentIndex = Bed.schema.indexes().find(([keys]) => keys.patientId === 1);
+  assert.ok(patientAssignmentIndex);
+  assert.equal(patientAssignmentIndex[1].unique, true);
+  assert.deepEqual(patientAssignmentIndex[1].partialFilterExpression, {
+    status: 'Occupied',
+    patientId: { $type: 'objectId' },
+  });
+});
+
 test('prescription requires at least one fully specified medicine', async () => {
   const error = await getValidationError(new Prescription({
     patientId: '507f1f77bcf86cd799439011',

@@ -16,4 +16,12 @@ const bedSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
 
+bedSchema.index(
+  { patientId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'Occupied', patientId: { $type: 'objectId' } },
+  },
+);
+
 export default mongoose.models.Bed || mongoose.model('Bed', bedSchema);
