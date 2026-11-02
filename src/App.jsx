@@ -5,6 +5,14 @@ import {
   Stethoscope, Sun, Users, X,
 } from 'lucide-react';
 import api from './api.js';
+import {
+  bloodGroups,
+  defaultClinicEndHour,
+  defaultClinicStartHour,
+  departments,
+  triageLevels,
+  wards,
+} from '../shared/constants.js';
 
 const rolePaths = {
   patient: '/patient-portal',
@@ -12,12 +20,18 @@ const rolePaths = {
   staff: '/medical-staff',
   admin: '/admin-command-center',
 };
-const departments = ['Cardiology', 'Neurology', 'Orthopedics', 'General Medicine', 'Pediatrics', 'Emergency'];
-const wards = ['ICU', 'Emergency', 'General Ward', 'Pediatrics'];
-const triageLevels = ['Urgent', 'OPD Routine', 'Follow-up'];
-const bloodGroups = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
-const appointmentSlots = Array.from({ length: 24 }, (_, hour) => {
-  const endHour = (hour + 1) % 24;
+const configuredClinicStartHour = Number(import.meta.env.VITE_CLINIC_START_HOUR ?? defaultClinicStartHour);
+const configuredClinicEndHour = Number(import.meta.env.VITE_CLINIC_END_HOUR ?? defaultClinicEndHour);
+const validClinicHours = Number.isInteger(configuredClinicStartHour)
+  && Number.isInteger(configuredClinicEndHour)
+  && configuredClinicStartHour >= 0
+  && configuredClinicStartHour < configuredClinicEndHour
+  && configuredClinicEndHour <= 24;
+const clinicStartHour = validClinicHours ? configuredClinicStartHour : defaultClinicStartHour;
+const clinicEndHour = validClinicHours ? configuredClinicEndHour : defaultClinicEndHour;
+const appointmentSlots = Array.from({ length: clinicEndHour - clinicStartHour }, (_, index) => {
+  const hour = clinicStartHour + index;
+  const endHour = hour + 1;
   const time = `${String(hour).padStart(2, '0')}:00`;
   const endTime = `${String(endHour).padStart(2, '0')}:00`;
   const startLabel = new Date(Date.UTC(2020, 0, 1, hour)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
@@ -872,7 +886,7 @@ function StaffDashboard({ notify }) {
             <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.filter((doctor) => doctor.specialization === appointmentForm.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></Field>
             <Field label="Triage"><Select value={appointmentForm.triage} onChange={change(setAppointmentForm, 'triage')}>{triageLevels.map((item) => <option key={item}>{item}</option>)}</Select></Field>
             <Field label="Appointment date"><Input type="date" min={localDateValue()} value={appointmentForm.date} onChange={change(setAppointmentForm, 'date')} required /><span className="text-xs font-normal text-slate-500">Appointments are available every day, including weekends and holidays.</span></Field>
-            <Field label="One-hour appointment slot (24/7)"><Select value={appointmentForm.time} onChange={change(setAppointmentForm, 'time')} required><option value="">Select an available time</option>{appointmentSlots.map((slot) => {
+            <Field label={`One-hour appointment slot (${String(clinicStartHour).padStart(2, '0')}:00–${String(clinicEndHour).padStart(2, '0')}:00)`}><Select value={appointmentForm.time} onChange={change(setAppointmentForm, 'time')} required><option value="">Select an available time</option>{appointmentSlots.map((slot) => {
               const isBooked = Boolean(appointmentForm.doctorId && appointmentForm.date && appointments.some((appointment) => (
                 appointment.doctorId?._id === appointmentForm.doctorId
                 && appointment.date.slice(0, 10) === appointmentForm.date

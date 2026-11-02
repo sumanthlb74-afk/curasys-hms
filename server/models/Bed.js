@@ -1,10 +1,11 @@
 import mongoose from 'mongoose';
+import { wards } from '../../shared/constants.js';
 
 const bedSchema = new mongoose.Schema({
   bedNumber: { type: String, required: true, unique: true, trim: true, uppercase: true },
   ward: {
     type: String,
-    enum: ['ICU', 'Emergency', 'General Ward', 'Pediatrics'],
+    enum: wards,
     required: true,
   },
   status: {

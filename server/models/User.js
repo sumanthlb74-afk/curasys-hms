@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import { bloodGroups } from '../../shared/constants.js';
 
 const emergencyContactSchema = new mongoose.Schema({
   name: { type: String, trim: true, default: '', maxlength: 100 },
@@ -32,7 +33,7 @@ const userSchema = new mongoose.Schema({
   specialization: { type: String, trim: true, default: '', maxlength: 100 },
   dateOfBirth: { type: Date, default: null, validate: { validator: (value) => !value || value <= new Date(), message: 'Date of birth cannot be in the future.' } },
   sex: { type: String, enum: ['', 'Female', 'Male', 'Intersex', 'Prefer not to say'], default: '' },
-  bloodGroup: { type: String, enum: ['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'], default: '' },
+  bloodGroup: { type: String, enum: ['', ...bloodGroups], default: '' },
   address: { type: String, trim: true, default: '', maxlength: 500 },
   emergencyContact: { type: emergencyContactSchema, default: () => ({}) },
   allergies: { type: [{ type: String, trim: true, maxlength: 100 }], default: [] },
@@ -55,28 +56,6 @@ userSchema.pre('save', async function hashPassword() {
 
 userSchema.methods.verifyPassword = function verifyPassword(candidate) {
   return bcrypt.compare(candidate, this.password);
-};
-
-userSchema.methods.toSafeObject = function toSafeObject() {
-  return {
-    id: this.id,
-    name: this.name,
-    email: this.email,
-    role: this.role,
-    uhid: this.uhid,
-    phone: this.phone,
-    specialization: this.specialization,
-    dateOfBirth: this.dateOfBirth,
-    sex: this.sex,
-    bloodGroup: this.bloodGroup,
-    address: this.address,
-    emergencyContact: this.emergencyContact,
-    allergies: this.allergies,
-    chronicConditions: this.chronicConditions,
-    currentMedications: this.currentMedications,
-    heightCm: this.heightCm,
-    weightKg: this.weightKg,
-  };
 };
 
 export default mongoose.models.User || mongoose.model('User', userSchema);

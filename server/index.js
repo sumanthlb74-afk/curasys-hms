@@ -21,14 +21,32 @@ import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from './validation.js';
+import {
+  bloodGroups,
+  defaultClinicEndHour,
+  defaultClinicStartHour,
+  departments,
+  triageLevels,
+  wards,
+} from '../shared/constants.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '.env') });
 
-const departments = ['Cardiology', 'Neurology', 'Orthopedics', 'General Medicine', 'Pediatrics', 'Emergency'];
-const wards = ['ICU', 'Emergency', 'General Ward', 'Pediatrics'];
 const bedStatuses = ['Available', 'Occupied', 'Maintenance'];
 const appointmentStatuses = ['Scheduled', 'Completed', 'Cancelled'];
-const triageLevels = ['Urgent', 'OPD Routine', 'Follow-up'];
+function configuredHour(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  if (!/^\d{1,2}$/.test(value) || Number(value) < 0 || Number(value) > 24) {
+    throw new Error(`${name} must be an hour between 0 and 24.`);
+  }
+  return Number(value);
+}
+const clinicStartHour = configuredHour('CLINIC_START_HOUR', defaultClinicStartHour);
+const clinicEndHour = configuredHour('CLINIC_END_HOUR', defaultClinicEndHour);
+if (clinicStartHour >= clinicEndHour) {
+  throw new Error('CLINIC_START_HOUR must be earlier than CLINIC_END_HOUR.');
+}
 
 const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -548,7 +566,7 @@ app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), async
     || !isOptionalPhone(phone)
     || (dateOfBirth !== undefined && dateOfBirth !== '' && !validDate(dateOfBirth))
     || (sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(sex))
-    || (bloodGroup !== undefined && !['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].includes(bloodGroup))
+    || (bloodGroup !== undefined && !['', ...bloodGroups].includes(bloodGroup))
     || !isOptionalAddress(address)
     || !contact || typeof contact !== 'object' || Array.isArray(contact)
     || !validOptionalString(contact.name, 100)
@@ -620,7 +638,7 @@ app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) 
     || !isOptionalPhone(update.phone)
     || (update.dateOfBirth !== undefined && update.dateOfBirth !== '' && !validDate(update.dateOfBirth))
     || (update.sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(update.sex))
-    || (update.bloodGroup !== undefined && !['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].includes(update.bloodGroup))
+    || (update.bloodGroup !== undefined && !['', ...bloodGroups].includes(update.bloodGroup))
     || !isOptionalAddress(update.address)
     || (update.emergencyContact !== undefined && (
       !update.emergencyContact
@@ -733,11 +751,12 @@ app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(
     || typeof department !== 'string' || !departments.includes(department)
     || !validDate(date)
     || typeof time !== 'string' || !/^([01]\d|2[0-3]):00$/.test(time)
+    || Number(time.slice(0, 2)) < clinicStartHour || Number(time.slice(0, 2)) >= clinicEndHour
     || !isFutureAppointment(date, time)
     || typeof symptoms !== 'string' || !symptoms.trim() || symptoms.length > 2000
     || (triage !== undefined && !triageLevels.includes(triage))
   ) {
-    response.status(400).json({ error: 'Choose an active patient and enter a future date and time, valid department, symptoms, and triage level.' });
+    response.status(400).json({ error: `Choose an active patient and enter a future appointment during clinic hours (${String(clinicStartHour).padStart(2, '0')}:00–${String(clinicEndHour).padStart(2, '0')}:00), with a valid department, symptoms, and triage level.` });
     return;
   }
   if (doctorId && (!validObjectId(doctorId) || !await User.exists({ _id: doctorId, role: 'doctor', isActive: { $ne: false } }))) {

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { triageLevels } from '../../shared/constants.js';
 
 const appointmentSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -15,7 +16,7 @@ const appointmentSchema = new mongoose.Schema({
   },
   triage: {
     type: String,
-    enum: ['Urgent', 'OPD Routine', 'Follow-up'],
+    enum: triageLevels,
     default: 'OPD Routine',
   },
 }, { timestamps: true });

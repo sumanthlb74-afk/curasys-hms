@@ -61,6 +61,8 @@ For a manual deployment, configure these settings from the repository root; the 
    - `NODE_ENV`: `production`.
    - `CLIENT_ORIGIN`: the full frontend origin, such as `https://curasys-hms.onrender.com`.
    - `HOSPITAL_TZ`: optional IANA time zone for appointment validation; defaults to `Asia/Kolkata`.
+   - `CLINIC_START_HOUR` and `CLINIC_END_HOUR`: optional 24-hour clock range; defaults to `8` and `20` (the end hour is exclusive).
+   - For a separately hosted frontend, also set `VITE_CLINIC_START_HOUR` and `VITE_CLINIC_END_HOUR` to the same values at build time.
    - `PORT`: usually supplied automatically by the hosting provider.
 3. For the API service, use `npm ci --omit=dev` and `npm start`. For the static frontend, use `npm ci --include=dev`, `npm run build`, and publish `dist`.
 4. Open `/api/health` on the deployed host and verify it reports `{"status":"ok"}` before signing in.
@@ -77,7 +79,7 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 - Administrators issue patient bills with an invoice number, total amount, and description, then mark bills Paid or Void. The invoice sequence is atomic per year; void bills do not count toward the patient's billed total. Only admins can issue or update bills; patients can read their own bills from their portal, while doctors and medical staff have no billing access.
 - Patients can read their own profile, visit notes, vitals, appointments, prescriptions, and bills. Patient chart data is read-only to patients.
 - Medical staff coordinate appointments and bed assignments without access to clinical notes, prescriptions, or detailed medical history. Deactivated patient accounts retain their historical records.
-- Appointment scheduling supports every calendar day with selectable one-hour slots across all 24 hours. Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
+- Appointment scheduling supports every calendar day with configurable one-hour slots, defaulting to 08:00–20:00. Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
 - Admin live bed counts, patient directory, staff accounts, bed creation/assignment/discharge, and appointment overview.
 - Administrator-only audit log records authentication outcomes and key patient, billing, note, prescription, and vital actions. Patient account deactivation retains data and records the administrator and timestamp.
 - Patient, appointment, vital, billing, prescription, and visit-note list APIs support `page`, `limit` (maximum 200), and patient search via `q`; the patient directory and pickers expose search and paging.
