@@ -22,7 +22,7 @@ after(async () => {
 test('health endpoint reports an unavailable database with a failing status', async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { status: 'unavailable', database: 'disconnected' });
+  assert.deepEqual(await response.json(), { status: 'degraded' });
   assert.equal(response.headers.get('x-powered-by'), null);
 });
 
@@ -33,7 +33,32 @@ test('malformed JSON receives a client error instead of a server error', async (
     body: '{',
   });
   assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: 'The request body contains malformed JSON.' });
+  assert.deepEqual(await response.json(), { error: 'Invalid JSON body' });
+});
+
+test('oversized JSON receives a 413 response', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: `{"value":"${'x'.repeat(65 * 1024)}"}`,
+  });
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), { error: 'Request too large' });
+});
+
+test('account registration rejects non-string phone numbers', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Test Admin',
+      email: 'admin@example.test',
+      password: 'a-secure-password',
+      phone: 123,
+      role: 'admin',
+    }),
+  });
+  assert.equal(response.status, 400);
 });
 
 test('public registration cannot create doctor accounts', async () => {

@@ -44,7 +44,7 @@ The repository includes a Render Blueprint (`render.yaml`) for both free service
 2. Create a MongoDB Atlas M0 cluster and database user. Configure Atlas Network Access to allow the Render service's outbound IP addresses; do not use a public IP allow-all rule for real or sensitive data.
 3. In Render, choose **New → Blueprint**, select `sumanthlb74-afk/curasys-hms`, and deploy the Blueprint. Enter the Atlas connection string when prompted for `MONGODB_URI`; Render generates the JWT and admin registration secrets.
 4. Wait for both services to finish deploying. The frontend is `https://curasys-hms.onrender.com`; the API health endpoint is `https://curasys-hms-api.onrender.com/api/health`.
-5. Confirm the health endpoint returns HTTP 200 with `"status":"ok"` and `"database":"connected"`. A disconnected database returns HTTP 503.
+5. Confirm the health endpoint returns HTTP 200 with `{"status":"ok"}`. If the database is disconnected, it returns HTTP 503 with `{"status":"degraded"}`.
 6. Open the frontend and register the initial administrator using `ADMIN_REGISTRATION_KEY` from the API service environment settings. Keep all secrets in the hosting dashboard, never in GitHub or chat.
 
 The live URL is assigned by Render after the Blueprint deploys. Do not enter real patient information; this educational project is not approved for clinical use.
@@ -60,7 +60,7 @@ For a manual deployment, configure these settings from the repository root; the 
    - `CLIENT_ORIGIN`: the full frontend origin, such as `https://curasys-hms.onrender.com`.
    - `PORT`: usually supplied automatically by the hosting provider.
 3. For the API service, use `npm ci --omit=dev` and `npm start`. For the static frontend, use `npm ci --include=dev`, `npm run build`, and publish `dist`.
-4. Open `/api/health` on the deployed host and verify it reports `"status":"ok"` and `"database":"connected"` before signing in.
+4. Open `/api/health` on the deployed host and verify it reports `{"status":"ok"}` before signing in.
 
 For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL including `/api` at frontend build time (for example `https://api.example.com/api`), and set the API's `CLIENT_ORIGIN` to the frontend origin. The local MongoDB service is for local development and is not accessible to a hosted website. Production deployments must configure their own reachable MongoDB URI; no Atlas credentials are stored in this project.
 

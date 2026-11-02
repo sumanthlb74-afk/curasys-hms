@@ -18,6 +18,7 @@ import ClinicalNote from './models/ClinicalNote.js';
 import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
+import { isOptionalAddress, isOptionalPhone, isOptionalString } from './validation.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '.env') });
 
@@ -245,16 +246,16 @@ async function doctorCanAccessPatient(doctorId, patientId) {
 
 app.get('/api/health', asyncRoute(async (_request, response) => {
   if (mongoose.connection.readyState !== 1) {
-    response.status(503).json({ status: 'unavailable', database: 'disconnected' });
+    response.status(503).json({ status: 'degraded' });
     return;
   }
   try {
     await mongoose.connection.db.admin().ping();
   } catch {
-    response.status(503).json({ status: 'unavailable', database: 'disconnected' });
+    response.status(503).json({ status: 'degraded' });
     return;
   }
-  response.json({ status: 'ok', database: 'connected' });
+  response.json({ status: 'ok' });
 }));
 
 app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, response) => {
@@ -264,7 +265,7 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     || email.length > 254
     || !validPassword(password)
-    || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
+    || !isOptionalPhone(phone)
   ) {
     response.status(400).json({ error: 'Enter a valid name, email, and password with at least 8 characters to set up an administrator account.' });
     return;
@@ -345,7 +346,7 @@ app.post('/api/doctors', authenticate, allow('admin'), asyncRoute(async (request
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254
     || !validPassword(password)
-    || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
+    || !isOptionalPhone(phone)
     || !departments.includes(specialization)
   ) {
     response.status(400).json({ error: 'Enter a valid name, email, password, phone, and department.' });
@@ -401,18 +402,18 @@ app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), async
     name, email, password, phone, dateOfBirth, sex, bloodGroup, address, emergencyContact,
     allergies, chronicConditions, currentMedications, heightCm, weightKg,
   } = request.body ?? {};
-  const validOptionalString = (value, maxLength) => value === undefined || (typeof value === 'string' && value.length <= maxLength);
+  const validOptionalString = isOptionalString;
   const validList = (value) => value === undefined || (Array.isArray(value) && value.length <= 20 && value.every((item) => typeof item === 'string' && item.trim() && item.length <= 100));
   const contact = emergencyContact ?? {};
   if (
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     || !validPassword(password)
-    || !validOptionalString(phone, 30)
+    || !isOptionalPhone(phone)
     || (dateOfBirth !== undefined && dateOfBirth !== '' && !validDate(dateOfBirth))
     || (sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(sex))
     || (bloodGroup !== undefined && !['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].includes(bloodGroup))
-    || !validOptionalString(address, 500)
+    || !isOptionalAddress(address)
     || !contact || typeof contact !== 'object' || Array.isArray(contact)
     || !validOptionalString(contact.name, 100)
     || !validOptionalString(contact.relationship, 50)
@@ -446,7 +447,7 @@ app.post('/api/staff', authenticate, allow('admin'), asyncRoute(async (request, 
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     || !validPassword(password)
-    || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
+    || !isOptionalPhone(phone)
   ) {
     response.status(400).json({ error: 'Enter a name, valid email, and password with at least 8 characters.' });
     return;
@@ -479,11 +480,11 @@ app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) 
     !Object.keys(update).length
     || (update.name !== undefined && (!update.name || update.name.length > 100))
     || (update.email !== undefined && (update.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(update.email)))
-    || (update.phone !== undefined && (typeof update.phone !== 'string' || update.phone.length > 30))
+    || !isOptionalPhone(update.phone)
     || (update.dateOfBirth !== undefined && update.dateOfBirth !== '' && !validDate(update.dateOfBirth))
     || (update.sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(update.sex))
     || (update.bloodGroup !== undefined && !['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].includes(update.bloodGroup))
-    || (update.address !== undefined && (typeof update.address !== 'string' || update.address.length > 500))
+    || !isOptionalAddress(update.address)
     || (update.emergencyContact !== undefined && (
       !update.emergencyContact
       || typeof update.emergencyContact !== 'object'
@@ -1161,11 +1162,11 @@ app.use((error, _request, response, next) => {
   }
   const status = Number(error.status || error.statusCode);
   if (status === 400 && error.type === 'entity.parse.failed') {
-    response.status(400).json({ error: 'The request body contains malformed JSON.' });
+    response.status(400).json({ error: 'Invalid JSON body' });
     return;
   }
   if (status === 413 || error.type === 'entity.too.large') {
-    response.status(413).json({ error: 'The request is too large.' });
+    response.status(413).json({ error: 'Request too large' });
     return;
   }
   if (status >= 400 && status < 500) {

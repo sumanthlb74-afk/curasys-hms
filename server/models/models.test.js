@@ -7,6 +7,16 @@ import ClinicalNote from './ClinicalNote.js';
 import Prescription from './Prescription.js';
 import User from './User.js';
 import Vital from './Vital.js';
+import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
+
+test('shared contact validators reject wrong types and oversized values', () => {
+  assert.equal(isOptionalPhone(123), false);
+  assert.equal(isOptionalPhone('1'.repeat(31)), false);
+  assert.equal(isOptionalPhone('123456'), true);
+  assert.equal(isOptionalAddress({}), false);
+  assert.equal(isOptionalAddress('a'.repeat(501)), false);
+  assert.equal(isOptionalString(undefined, 20), true);
+});
 
 async function getValidationError(document) {
   try {
