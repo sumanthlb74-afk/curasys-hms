@@ -29,6 +29,7 @@ import {
   triageLevels,
   wards,
 } from '../shared/constants.js';
+import { isWithinClinicHours } from '../shared/clinic-hours.js';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '.env') });
 
@@ -750,8 +751,7 @@ app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
     || typeof department !== 'string' || !departments.includes(department)
     || !validDate(date)
-    || typeof time !== 'string' || !/^([01]\d|2[0-3]):00$/.test(time)
-    || Number(time.slice(0, 2)) < clinicStartHour || Number(time.slice(0, 2)) >= clinicEndHour
+    || !isWithinClinicHours(time, clinicStartHour, clinicEndHour)
     || !isFutureAppointment(date, time)
     || typeof symptoms !== 'string' || !symptoms.trim() || symptoms.length > 2000
     || (triage !== undefined && !triageLevels.includes(triage))

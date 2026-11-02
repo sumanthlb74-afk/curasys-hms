@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test, { after, before } from 'node:test';
 import app from './index.js';
+import { isWithinClinicHours } from '../shared/clinic-hours.js';
 
 let server;
 let baseUrl;
@@ -34,6 +35,25 @@ test('malformed JSON receives a client error instead of a server error', async (
   });
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: 'Invalid JSON body' });
+});
+
+test('unauthenticated requests cannot access patient intake or directories', async () => {
+  const intake = await fetch(`${baseUrl}/api/patients`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const directory = await fetch(`${baseUrl}/api/patients`);
+  assert.equal(intake.status, 401);
+  assert.equal(directory.status, 401);
+});
+
+test('clinic-hour validation accepts only hourly slots in the configured range', () => {
+  assert.equal(isWithinClinicHours('08:00', 8, 20), true);
+  assert.equal(isWithinClinicHours('19:00', 8, 20), true);
+  assert.equal(isWithinClinicHours('07:00', 8, 20), false);
+  assert.equal(isWithinClinicHours('20:00', 8, 20), false);
+  assert.equal(isWithinClinicHours('09:30', 8, 20), false);
 });
 
 test('oversized JSON receives a 413 response', async () => {

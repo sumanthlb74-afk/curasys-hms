@@ -9,6 +9,7 @@ import Prescription from './Prescription.js';
 import User from './User.js';
 import Vital from './Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
+import { bloodGroups, departments, triageLevels, wards } from '../../shared/constants.js';
 
 test('shared contact validators reject wrong types and oversized values', () => {
   assert.equal(isOptionalPhone(123), false);
@@ -17,6 +18,13 @@ test('shared contact validators reject wrong types and oversized values', () => 
   assert.equal(isOptionalAddress({}), false);
   assert.equal(isOptionalAddress('a'.repeat(501)), false);
   assert.equal(isOptionalString(undefined, 20), true);
+});
+
+test('shared metadata is used by the Mongoose model enums', () => {
+  assert.deepEqual(User.schema.path('bloodGroup').enumValues, ['', ...bloodGroups]);
+  assert.deepEqual(Appointment.schema.path('triage').enumValues, triageLevels);
+  assert.deepEqual(Bed.schema.path('ward').enumValues, wards);
+  assert.ok(departments.includes('Cardiology'));
 });
 
 test('audit records require actor role, action, and entity type', async () => {
