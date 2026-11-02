@@ -984,6 +984,9 @@ function AdminDashboard({ notify }) {
   const [doctorForm, setDoctorForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
   const [billForm, setBillForm] = useState(newBillForm);
+  const [creatingStaff, setCreatingStaff] = useState(false);
+  const [creatingDoctor, setCreatingDoctor] = useState(false);
+  const [issuingBill, setIssuingBill] = useState(false);
   const [assignment, setAssignment] = useState({});
   const [editingPatient, setEditingPatient] = useState(null);
   const refresh = useCallback(() => {
@@ -994,10 +997,12 @@ function AdminDashboard({ notify }) {
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
   const createStaffAccount = async (event) => {
     event.preventDefault();
+    if (creatingStaff) return;
     if (staffForm.password !== staffForm.confirmPassword) {
       notify('The temporary passwords do not match.', 'error');
       return;
     }
+    setCreatingStaff(true);
     try {
       const staffData = { ...staffForm };
       delete staffData.confirmPassword;
@@ -1006,13 +1011,16 @@ function AdminDashboard({ notify }) {
       setStaffForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
+    finally { setCreatingStaff(false); }
   };
   const createDoctorAccount = async (event) => {
     event.preventDefault();
+    if (creatingDoctor) return;
     if (doctorForm.password !== doctorForm.confirmPassword) {
       notify('The temporary passwords do not match.', 'error');
       return;
     }
+    setCreatingDoctor(true);
     try {
       const doctorData = { ...doctorForm };
       delete doctorData.confirmPassword;
@@ -1021,6 +1029,7 @@ function AdminDashboard({ notify }) {
       setDoctorForm({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
+    finally { setCreatingDoctor(false); }
   };
   const updateDoctorDepartment = async (doctorId, specialization) => {
     try {
@@ -1043,6 +1052,8 @@ function AdminDashboard({ notify }) {
   };
   const issueBill = async (event) => {
     event.preventDefault();
+    if (issuingBill) return;
+    setIssuingBill(true);
     try {
       await api.post('/billing', {
         ...billForm,
@@ -1052,6 +1063,7 @@ function AdminDashboard({ notify }) {
       setBillForm(newBillForm());
       refresh();
     } catch (error) { notify(error.message, 'error'); }
+    finally { setIssuingBill(false); }
   };
   const updateBillStatus = async (bill, status) => {
     try {
@@ -1138,7 +1150,7 @@ function AdminDashboard({ notify }) {
             <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={doctorForm.phone} onChange={change(setDoctorForm, 'phone')} /></Field>
             <Field label="Department"><Select value={doctorForm.specialization} onChange={change(setDoctorForm, 'specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
             <p className="text-xs text-slate-500 sm:col-span-2">Doctors change this temporary password on first sign-in. Only an administrator can create doctor accounts.</p>
-            <button className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />Create doctor login</button>
+            <button disabled={creatingDoctor} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingDoctor ? 'Creating doctor login…' : 'Create doctor login'}</button>
           </form>
         </Card>
         <Card title="Create medical staff account" icon={Stethoscope}>
@@ -1148,7 +1160,7 @@ function AdminDashboard({ notify }) {
             <Field label="Temporary password"><Input type="password" minLength="8" value={staffForm.password} onChange={change(setStaffForm, 'password')} required /></Field>
             <Field label="Confirm temporary password"><Input type="password" minLength="8" autoComplete="new-password" value={staffForm.confirmPassword} onChange={change(setStaffForm, 'confirmPassword')} required /></Field>
             <Field label="Phone"><Input value={staffForm.phone} onChange={change(setStaffForm, 'phone')} /></Field>
-            <button className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />Create staff login</button>
+            <button disabled={creatingStaff} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingStaff ? 'Creating staff login…' : 'Create staff login'}</button>
           </form>
         </Card>
         <Card title="Doctor departments" icon={Stethoscope}>
@@ -1171,8 +1183,8 @@ function AdminDashboard({ notify }) {
             <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
             <Field label="Total amount (INR)"><Input type="number" min="0.01" max="100000000" step="0.01" required value={billForm.totalAmount} onChange={change(setBillForm, 'totalAmount')} /></Field>
             <Field label="Bill description"><Textarea rows="2" maxLength="1000" required value={billForm.description} onChange={change(setBillForm, 'description')} /></Field>
-            <button className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700"><Receipt className="h-4 w-4" />Issue bill</button>
-            <p className="text-xs text-slate-500">The standard consultation fee is ₹500 and can be changed before issuing. This default is only a form value; no bill is saved until you issue it. Patients can view issued bills in their read-only portal.</p>
+            <button disabled={issuingBill} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-wait disabled:opacity-60"><Receipt className="h-4 w-4" />{issuingBill ? 'Issuing bill…' : 'Issue bill'}</button>
+            <p className="text-xs text-slate-500">The standard consultation fee is ₹500 and can be changed before issuing. This default is only a form value; no bill is saved until you issue it. Patients can view issued bills in their read-only portal. After inactivity, the free API may need time to wake up. If a timeout occurs, refresh the dashboard and check the bills list before retrying.</p>
           </form>
         </Card>
         <Card title={`Issued bills · ${bills.length}`} icon={Receipt}>

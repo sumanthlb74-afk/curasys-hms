@@ -49,6 +49,8 @@ The repository includes a Render Blueprint (`render.yaml`) for both free service
 5. Confirm the health endpoint returns HTTP 200 with `{"status":"ok"}`. If the database is disconnected, it returns HTTP 503 with `{"status":"degraded"}`.
 6. Open the frontend and register the initial administrator using `ADMIN_REGISTRATION_KEY` from the API service environment settings. Keep all secrets in the hosting dashboard, never in GitHub or chat.
 
+Render's free API service can sleep between visits. The frontend allows up to 90 seconds for API requests so a cold start has time to complete. While account or billing forms are submitting, keep the page open and do not submit again; if a timeout appears, refresh the dashboard and check for the created record before retrying.
+
 The API service needs `NODE_ENV=production`, `MONGODB_URI`, `JWT_SECRET` (at least 32 characters), `ADMIN_REGISTRATION_KEY`, and `CLIENT_ORIGIN=https://curasys-hms.onrender.com`. The Blueprint generates values for the two secrets. If the existing Render service has no `ADMIN_REGISTRATION_KEY`, add it under **curasys-hms-api → Environment**, save, and redeploy. Keep it only in the API environment; never put it in `VITE_*` variables or source code. To retrieve a generated key, reveal it in the API service's Environment page and enter it only in Administrator setup. The static service uses `VITE_API_BASE_URL=https://curasys-hms-api.onrender.com/api`. Render supplies `PORT`; clinic hours default to 08:00–20:00, and `HOSPITAL_TZ` defaults to `Asia/Kolkata`.
 
 The live URL is assigned by Render after the Blueprint deploys. Do not enter real patient information; this educational project is not approved for clinical use.

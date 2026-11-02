@@ -1,9 +1,10 @@
 import axios from 'axios';
+import { getApiErrorMessage } from './api-error-message.js';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   headers: { 'Content-Type': 'application/json' },
-  timeout: 30_000,
+  timeout: 90_000,
 });
 
 api.interceptors.request.use((config) => {
@@ -19,8 +20,7 @@ api.interceptors.response.use(
       localStorage.removeItem('curasys_token');
       window.dispatchEvent(new Event('curasys:session-expired'));
     }
-    const message = error.response?.data?.error || error.message || 'The API request failed.';
-    return Promise.reject(new Error(message));
+    return Promise.reject(new Error(getApiErrorMessage(error)));
   },
 );
 
