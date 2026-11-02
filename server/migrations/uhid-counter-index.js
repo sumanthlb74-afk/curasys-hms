@@ -12,9 +12,14 @@ async function migrate() {
   const users = mongoose.connection.collection('users');
   const existingIndex = (await users.indexes()).find((index) => index.key?.uhid === 1);
   const expectedPartialFilter = { uhid: { $type: 'string' } };
+  const hasExpectedIndex = Boolean(
+    existingIndex
+    && existingIndex.unique
+    && JSON.stringify(existingIndex.partialFilterExpression) === JSON.stringify(expectedPartialFilter),
+  );
   if (
     existingIndex
-    && (!existingIndex.unique || JSON.stringify(existingIndex.partialFilterExpression) !== JSON.stringify(expectedPartialFilter))
+    && !hasExpectedIndex
   ) {
     await users.dropIndex(existingIndex.name);
   }
@@ -44,10 +49,12 @@ async function migrate() {
       { upsert: true },
     );
   }
-  await users.createIndex(
-    { uhid: 1 },
-    { name: 'uhid_1', unique: true, partialFilterExpression: expectedPartialFilter },
-  );
+  if (!hasExpectedIndex) {
+    await users.createIndex(
+      { uhid: 1 },
+      { name: 'uhid_1', unique: true, partialFilterExpression: expectedPartialFilter },
+    );
+  }
   console.log('UHID index migration completed; existing patient UHIDs were preserved.');
 }
 
