@@ -112,6 +112,7 @@ function authenticate(request, response, next) {
           || user.isActive === false
           || user.role !== claims.role
           || (claims.sessionVersion || 0) !== (user.sessionVersion || 0)
+          || (user.passwordChangedAt && claims.iat * 1000 < user.passwordChangedAt.getTime())
         ) {
           response.status(401).json({ error: 'Your session is no longer valid. Sign in again.' });
           return;
@@ -151,6 +152,12 @@ function validObjectId(value) {
   return mongoose.isValidObjectId(value);
 }
 
+function validPassword(value) {
+  if (typeof value !== 'string') return false;
+  const byteLength = Buffer.byteLength(value, 'utf8');
+  return byteLength >= 8 && byteLength <= 72;
+}
+
 function assignUhid() {
   const suffix = crypto.randomBytes(6).toString('hex').toUpperCase();
   return `CUR-${new Date().getFullYear()}-${suffix}`;
@@ -170,6 +177,7 @@ async function createUser({
         role,
         registeredBy: registeredBy || null,
         mustChangePassword,
+        passwordChangedAt: mustChangePassword ? new Date() : null,
         phone: phone?.trim() || '',
         specialization: role === 'doctor' ? specialization?.trim() || '' : '',
         dateOfBirth: dateOfBirth || null,
@@ -255,7 +263,7 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     || email.length > 254
-    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || !validPassword(password)
     || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
   ) {
     response.status(400).json({ error: 'Enter a valid name, email, and password with at least 8 characters to set up an administrator account.' });
@@ -280,7 +288,7 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
 
 app.post('/api/auth/login', authLimiter, asyncRoute(async (request, response) => {
   const { email, password } = request.body ?? {};
-  if (typeof email !== 'string' || email.length > 254 || typeof password !== 'string' || !password || password.length > 128) {
+  if (typeof email !== 'string' || email.length > 254 || typeof password !== 'string' || !password || Buffer.byteLength(password, 'utf8') > 72) {
     response.status(400).json({ error: 'Enter your email and password.' });
     return;
   }
@@ -302,7 +310,7 @@ app.get('/api/auth/me', authenticate, (request, response) => {
 
 app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, response) => {
   const { currentPassword, newPassword } = request.body ?? {};
-  if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+  if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !validPassword(newPassword)) {
     response.status(400).json({ error: 'Enter your current password and a new password with at least 8 characters.' });
     return;
   }
@@ -317,6 +325,7 @@ app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, r
   }
   user.password = newPassword;
   user.mustChangePassword = false;
+  user.passwordChangedAt = new Date();
   user.sessionVersion = (user.sessionVersion || 0) + 1;
   await user.save();
   response.json({ token: signToken(user), user: publicUser(user) });
@@ -335,7 +344,7 @@ app.post('/api/doctors', authenticate, allow('admin'), asyncRoute(async (request
   if (
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254
-    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || !validPassword(password)
     || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
     || !departments.includes(specialization)
   ) {
@@ -398,7 +407,7 @@ app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), async
   if (
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || !validPassword(password)
     || !validOptionalString(phone, 30)
     || (dateOfBirth !== undefined && dateOfBirth !== '' && !validDate(dateOfBirth))
     || (sex !== undefined && !['', 'Female', 'Male', 'Intersex', 'Prefer not to say'].includes(sex))
@@ -436,7 +445,7 @@ app.post('/api/staff', authenticate, allow('admin'), asyncRoute(async (request, 
   if (
     typeof name !== 'string' || !name.trim() || name.trim().length > 100
     || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    || typeof password !== 'string' || password.length < 8 || password.length > 128
+    || !validPassword(password)
     || (phone !== undefined && (typeof phone !== 'string' || phone.length > 30))
   ) {
     response.status(400).json({ error: 'Enter a name, valid email, and password with at least 8 characters.' });
@@ -527,7 +536,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
     return;
   }
   const { password } = request.body ?? {};
-  if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+  if (!validPassword(password)) {
     response.status(400).json({ error: 'Enter a temporary password with at least 8 characters.' });
     return;
   }
@@ -550,6 +559,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
   }
   patient.password = password;
   patient.mustChangePassword = true;
+  patient.passwordChangedAt = new Date();
   patient.sessionVersion = (patient.sessionVersion || 0) + 1;
   await patient.save();
   response.json({ success: true });

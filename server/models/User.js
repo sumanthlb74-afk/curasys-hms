@@ -24,6 +24,7 @@ const userSchema = new mongoose.Schema({
   registeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   isActive: { type: Boolean, default: true },
   mustChangePassword: { type: Boolean, default: false },
+  passwordChangedAt: { type: Date, default: null },
   sessionVersion: { type: Number, default: 0, min: 0 },
   phone: { type: String, trim: true, default: '', maxlength: 30 },
   specialization: { type: String, trim: true, default: '', maxlength: 100 },

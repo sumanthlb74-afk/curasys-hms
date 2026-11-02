@@ -50,6 +50,7 @@ test('user schema defaults new accounts to active and current-password sessions'
   });
   assert.equal(user.isActive, true);
   assert.equal(user.mustChangePassword, false);
+  assert.equal(user.passwordChangedAt, null);
   assert.equal(user.sessionVersion, 0);
 });
 

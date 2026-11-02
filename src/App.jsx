@@ -64,6 +64,11 @@ function parseList(value) {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
+function generateTemporaryPassword() {
+  const randomBytes = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...randomBytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+}
+
 function emptyPatientForm() {
   return {
     name: '', email: '', password: '', confirmPassword: '', phone: '', dateOfBirth: '', sex: '', bloodGroup: '', address: '',
@@ -330,8 +335,8 @@ function ChangePasswordPage({ user, onAuth, notify, required = false }) {
         <p className="mt-2 text-sm text-slate-500">{required ? 'For your security, replace the temporary password before opening your workspace.' : `Signed in as ${user.email}.`}</p>
         <form onSubmit={submit} className="mt-6 grid gap-4">
           <Field label="Current password"><Input type="password" autoComplete="current-password" value={form.currentPassword} onChange={(event) => setForm((value) => ({ ...value, currentPassword: event.target.value }))} required /></Field>
-          <Field label="New password"><Input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={form.newPassword} onChange={(event) => setForm((value) => ({ ...value, newPassword: event.target.value }))} required /></Field>
-          <Field label="Confirm new password"><Input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={form.confirmPassword} onChange={(event) => setForm((value) => ({ ...value, confirmPassword: event.target.value }))} required /></Field>
+          <Field label="New password"><Input type="password" autoComplete="new-password" minLength={8} maxLength={72} value={form.newPassword} onChange={(event) => setForm((value) => ({ ...value, newPassword: event.target.value }))} required /></Field>
+          <Field label="Confirm new password"><Input type="password" autoComplete="new-password" minLength={8} maxLength={72} value={form.confirmPassword} onChange={(event) => setForm((value) => ({ ...value, confirmPassword: event.target.value }))} required /></Field>
           <button disabled={loading} className="rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white hover:bg-teal-700 disabled:opacity-60">{loading ? 'Updating…' : 'Update password'}</button>
         </form>
       </section>
@@ -380,8 +385,8 @@ function AuthPage({ onAuth, notify }) {
         <form onSubmit={submit} className="grid gap-4">
           {isRegister && <Field label="Full name"><Input value={form.name} onChange={change('name')} autoComplete="name" required maxLength={100} /></Field>}
           <Field label="Email"><Input type="email" value={form.email} onChange={change('email')} autoComplete="email" required /></Field>
-          <Field label="Password"><Input type="password" value={form.password} onChange={change('password')} autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={8} required /></Field>
-          {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} required /></Field>}
+          <Field label="Password"><Input type="password" value={form.password} onChange={change('password')} autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={isRegister ? 8 : undefined} maxLength={72} required /></Field>
+          {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} maxLength={72} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
           {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
           {isRegister && <p className="text-xs leading-relaxed text-slate-500">This one-time setup is only available before the first administrator account is created. Administrators create all doctor, staff, and patient accounts.</p>}
@@ -425,6 +430,8 @@ function useLoad(notify, requests) {
 
 function PatientRegistrationForm({ notify, onCreated }) {
   const [form, setForm] = useState(emptyPatientForm);
+  const [showPassword, setShowPassword] = useState(false);
+  const [createdCredentials, setCreatedCredentials] = useState(null);
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   const changeEmergencyContact = (key) => (event) => setForm((value) => ({
     ...value,
@@ -445,7 +452,8 @@ function PatientRegistrationForm({ notify, onCreated }) {
         chronicConditions: parseList(form.chronicConditions),
         currentMedications: parseList(form.currentMedications),
       });
-      notify(`Patient registered with health ID ${data.patient.uhid}. They must change the temporary password at first sign-in.`);
+      setCreatedCredentials({ email: data.patient.email, password: form.password, uhid: data.patient.uhid });
+      notify(`Patient registered with health ID ${data.patient.uhid}.`);
       setForm(emptyPatientForm());
       onCreated();
     } catch (error) {
@@ -458,8 +466,8 @@ function PatientRegistrationForm({ notify, onCreated }) {
         <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Patient identity & contact</p>
         <Field label="Full legal name"><Input autoComplete="name" maxLength="100" value={form.name} onChange={change('name')} required /></Field>
         <Field label="Email / patient login"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
-        <Field label="Temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={form.password} onChange={change('password')} required /><span className="text-xs font-normal text-slate-500">The patient will be required to replace it at first sign-in.</span></Field>
-        <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
+        <Field label="Temporary password"><span className="flex gap-2"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required /><button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button></span><span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500"><span>The patient must replace it at first sign-in.</span><button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => { const password = generateTemporaryPassword(); setForm((value) => ({ ...value, password, confirmPassword: password })); setShowPassword(true); }}>Generate strong temporary password</button></span></Field>
+        <Field label="Confirm temporary password"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
         <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
         <Field label="Date of birth"><Input type="date" max={localDateValue()} value={form.dateOfBirth} onChange={change('dateOfBirth')} required />{calculateAge(form.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(form.dateOfBirth)} years (calculated)</span>}</Field>
         <Field label="Sex (optional)"><Select value={form.sex} onChange={change('sex')}><option value="">Not specified</option>{['Female', 'Male', 'Intersex', 'Prefer not to say'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
@@ -479,6 +487,7 @@ function PatientRegistrationForm({ notify, onCreated }) {
         </div>
         <button className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2"><Plus className="h-4 w-4" />Create patient chart & login</button>
       </form>
+      {createdCredentials && <div role="dialog" aria-modal="true" aria-labelledby="created-patient-title" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4"><section className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"><h2 id="created-patient-title" className="text-lg font-bold">Patient login created</h2><p className="mt-2 text-sm text-slate-500">Share these credentials securely. This temporary password is shown only once and must be changed at first sign-in.</p><p className="mt-4 text-sm"><strong>Email:</strong> {createdCredentials.email}</p><p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {createdCredentials.password}</p><p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {createdCredentials.uhid}</p><div className="mt-5 flex justify-end gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => { try { await navigator.clipboard.writeText(createdCredentials.password); notify('Temporary password copied.'); } catch { notify('Clipboard access is unavailable. Copy the password manually.', 'error'); } }}>Copy password</button><button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCreatedCredentials(null)}>Done</button></div></section></div>}
     </Card>
   );
 }
@@ -508,8 +517,8 @@ function PatientPasswordReset({ patients, notify, onReset }) {
     <Card title="Reset patient password" icon={ShieldCheck}>
       <form onSubmit={submit} className="grid gap-3 sm:grid-cols-3">
         <Field label="Patient"><Select required value={patientId} onChange={(event) => setPatientId(event.target.value)}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
-        <Field label="New temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field>
-        <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></Field>
+        <Field label="New temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field>
+        <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></Field>
         <button disabled={!patients.length} className="rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:opacity-50 dark:text-teal-300 sm:col-span-3">Reset and require password change</button>
       </form>
     </Card>
@@ -933,8 +942,8 @@ function AdminDashboard({ notify }) {
           <form onSubmit={createDoctorAccount} className="grid gap-3 sm:grid-cols-2">
             <Field label="Full name"><Input autoComplete="name" maxLength="100" value={doctorForm.name} onChange={change(setDoctorForm, 'name')} required /></Field>
             <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={doctorForm.email} onChange={change(setDoctorForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={doctorForm.password} onChange={change(setDoctorForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="128" autoComplete="new-password" value={doctorForm.confirmPassword} onChange={change(setDoctorForm, 'confirmPassword')} required /></Field>
+            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={doctorForm.password} onChange={change(setDoctorForm, 'password')} required /></Field>
+            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={doctorForm.confirmPassword} onChange={change(setDoctorForm, 'confirmPassword')} required /></Field>
             <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={doctorForm.phone} onChange={change(setDoctorForm, 'phone')} /></Field>
             <Field label="Department"><Select value={doctorForm.specialization} onChange={change(setDoctorForm, 'specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
             <p className="text-xs text-slate-500 sm:col-span-2">Doctors change this temporary password on first sign-in. Only an administrator can create doctor accounts.</p>

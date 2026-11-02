@@ -52,6 +52,21 @@ test('public registration cannot create doctor accounts', async () => {
   assert.match((await response.json()).error, /administrator/i);
 });
 
+test('new passwords over bcrypt’s 72-byte limit are rejected before account creation', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Test Admin',
+      email: 'admin@example.test',
+      password: 'é'.repeat(37),
+      role: 'admin',
+      adminRegistrationKey: 'not-used',
+    }),
+  });
+  assert.equal(response.status, 400);
+});
+
 test('login limits repeated attempts for the same email and IP', async () => {
   const request = () => fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
