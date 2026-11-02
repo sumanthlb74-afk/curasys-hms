@@ -77,6 +77,7 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 - Medical staff coordinate appointments and bed assignments without access to clinical notes, prescriptions, or detailed medical history. Deactivated patient accounts retain their historical records.
 - Appointment scheduling supports every calendar day with selectable one-hour slots across all 24 hours. Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
 - Admin live bed counts, patient directory, staff accounts, bed creation/assignment/discharge, and appointment overview.
+- Administrator-only audit log records authentication outcomes and key patient, billing, note, prescription, and vital actions. Patient account deactivation retains data and records the administrator and timestamp.
 - Mongoose models for users, appointments, beds, prescriptions, vitals, clinical notes, and bills.
 - REST API validation and role checks. Passwords are bcrypt-hashed.
 

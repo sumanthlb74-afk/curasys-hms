@@ -23,6 +23,8 @@ const userSchema = new mongoose.Schema({
   uhid: { type: String, unique: true, required: true },
   registeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   isActive: { type: Boolean, default: true },
+  deletedAt: { type: Date, default: null },
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   mustChangePassword: { type: Boolean, default: false },
   passwordChangedAt: { type: Date, default: null },
   sessionVersion: { type: Number, default: 0, min: 0 },

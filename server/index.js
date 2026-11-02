@@ -12,6 +12,7 @@ import mongoose from 'mongoose';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import Appointment from './models/Appointment.js';
+import AuditLog from './models/AuditLog.js';
 import Bed from './models/Bed.js';
 import Billing from './models/Billing.js';
 import ClinicalNote from './models/ClinicalNote.js';
@@ -147,6 +148,21 @@ function allow(...allowedRoles) {
 
 function asyncRoute(handler) {
   return (request, response, next) => Promise.resolve(handler(request, response, next)).catch(next);
+}
+
+async function audit(request, {
+  action, entityType, entityId = null, patientId = null, actorId = request.user?._id || null,
+  actorRole = request.user?.role || 'anonymous',
+}) {
+  await AuditLog.create({
+    actorId,
+    actorRole,
+    action,
+    entityType,
+    entityId,
+    patientId,
+    ip: request.ip || '',
+  });
 }
 
 function validObjectId(value) {
@@ -304,9 +320,21 @@ app.post('/api/auth/login', authLimiter, asyncRoute(async (request, response) =>
     ? await user.verifyPassword(password)
     : await bcrypt.compare(password, '$2b$12$SnfE2ps00748FaTzgA3jAe/ST6CV08ai5sKmXhJKmr87TkTyn1YOe');
   if (!user || user.isActive === false || !passwordMatches) {
+    await audit(request, {
+      action: 'login.failed',
+      entityType: 'auth',
+      actorId: user?._id || null,
+      actorRole: user?.role || 'anonymous',
+    });
     response.status(401).json({ error: 'Email or password is incorrect.' });
     return;
   }
+  await audit(request, {
+    action: 'login.succeeded',
+    entityType: 'auth',
+    actorId: user._id,
+    actorRole: user.role,
+  });
   response.json({ token: signToken(user), user: publicUser(user) });
 }));
 
@@ -399,7 +427,30 @@ app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncR
     .select(patientFields)
     .sort({ name: 1 })
     .lean();
+  if (request.user.role === 'doctor' || request.user.role === 'staff') {
+    await audit(request, { action: 'patients.listed', entityType: 'patient' });
+  }
   response.json({ patients });
+}));
+
+app.get('/api/audit', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  const page = Number.parseInt(request.query.page, 10) || 1;
+  const limit = Math.min(Number.parseInt(request.query.limit, 10) || 50, 200);
+  if (page < 1 || limit < 1) {
+    response.status(400).json({ error: 'Page and limit must be positive integers.' });
+    return;
+  }
+  const [items, total] = await Promise.all([
+    AuditLog.find({})
+      .populate('actorId', 'name role')
+      .populate('patientId', 'name uhid')
+      .sort({ at: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    AuditLog.countDocuments({}),
+  ]);
+  response.json({ items, total, page });
 }));
 
 app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
@@ -435,6 +486,7 @@ app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), async
     emergencyContact: contact, allergies, chronicConditions, currentMedications, heightCm, weightKg,
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'patient.created', entityType: 'patient', entityId: patient._id, patientId: patient._id });
   response.status(201).json({ patient: publicUser(patient) });
 }));
 
@@ -526,13 +578,17 @@ app.delete('/api/patients/:id', authenticate, allow('admin'), asyncRoute(async (
   }
   const patient = await User.findOneAndUpdate(
     { _id: request.params.id, role: 'patient', isActive: { $ne: false } },
-    { $set: { isActive: false }, $inc: { sessionVersion: 1 } },
+    {
+      $set: { isActive: false, deletedAt: new Date(), deletedBy: request.user._id },
+      $inc: { sessionVersion: 1 },
+    },
     { new: true },
   );
   if (!patient) {
     response.status(404).json({ error: 'Patient not found.' });
     return;
   }
+  await audit(request, { action: 'patient.deactivated', entityType: 'patient', entityId: patient._id, patientId: patient._id });
   response.json({ success: true, message: 'Patient account deactivated; the medical record has been retained.' });
 }));
 
@@ -568,6 +624,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
   patient.passwordChangedAt = new Date();
   patient.sessionVersion = (patient.sessionVersion || 0) + 1;
   await patient.save();
+  await audit(request, { action: 'patient.password_reset', entityType: 'patient', entityId: patient._id, patientId: patient._id });
   response.json({ success: true });
 }));
 
@@ -875,6 +932,7 @@ app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request
     totalPaise,
     description: description.trim(),
   });
+  await audit(request, { action: 'billing.issued', entityType: 'billing', entityId: bill._id, patientId });
   response.status(201).json({ bill });
 }));
 
@@ -933,6 +991,7 @@ app.post('/api/clinical-notes', authenticate, allow('doctor'), asyncRoute(async 
     plan,
     followUp,
   });
+  await audit(request, { action: 'clinical_note.created', entityType: 'clinical_note', entityId: clinicalNote._id, patientId });
   response.status(201).json({ clinicalNote });
 }));
 
@@ -964,6 +1023,12 @@ app.put('/api/clinical-notes/:id', authenticate, allow('doctor'), asyncRoute(asy
     response.status(404).json({ error: 'Clinical note not found or you do not have permission to update it.' });
     return;
   }
+  await audit(request, {
+    action: 'clinical_note.updated',
+    entityType: 'clinical_note',
+    entityId: clinicalNote._id,
+    patientId: clinicalNote.patientId,
+  });
   response.json({ clinicalNote });
 }));
 
@@ -977,6 +1042,12 @@ app.delete('/api/clinical-notes/:id', authenticate, allow('doctor'), asyncRoute(
     response.status(404).json({ error: 'Clinical note not found or you do not have permission to delete it.' });
     return;
   }
+  await audit(request, {
+    action: 'clinical_note.deleted',
+    entityType: 'clinical_note',
+    entityId: clinicalNote._id,
+    patientId: clinicalNote.patientId,
+  });
   response.json({ success: true });
 }));
 
@@ -1005,17 +1076,16 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
     instructions,
     followUp,
   });
+  await audit(request, { action: 'prescription.created', entityType: 'prescription', entityId: prescription._id, patientId });
   response.status(201).json({ prescription });
 }));
 
-app.put('/api/prescriptions/:id', authenticate, allow('doctor', 'admin'), asyncRoute(async (request, response) => {
+app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid prescription ID.' });
     return;
   }
-  const filter = request.user.role === 'doctor'
-    ? { _id: request.params.id, doctorId: request.user.id }
-    : { _id: request.params.id };
+  const filter = { _id: request.params.id, doctorId: request.user.id };
   const { diagnosis, medicines, instructions, followUp } = request.body ?? {};
   const update = {};
   if (typeof diagnosis === 'string' && diagnosis.trim()) update.diagnosis = diagnosis.trim();
@@ -1036,22 +1106,31 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor', 'admin'), asyncR
     response.status(404).json({ error: 'Prescription not found or you do not have permission to update it.' });
     return;
   }
+  await audit(request, {
+    action: 'prescription.updated',
+    entityType: 'prescription',
+    entityId: prescription._id,
+    patientId: prescription.patientId,
+  });
   response.json({ prescription });
 }));
 
-app.delete('/api/prescriptions/:id', authenticate, allow('doctor', 'admin'), asyncRoute(async (request, response) => {
+app.delete('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid prescription ID.' });
     return;
   }
-  const filter = request.user.role === 'doctor'
-    ? { _id: request.params.id, doctorId: request.user.id }
-    : { _id: request.params.id };
-  const prescription = await Prescription.findOneAndDelete(filter);
+  const prescription = await Prescription.findOneAndDelete({ _id: request.params.id, doctorId: request.user.id });
   if (!prescription) {
     response.status(404).json({ error: 'Prescription not found or you do not have permission to delete it.' });
     return;
   }
+  await audit(request, {
+    action: 'prescription.deleted',
+    entityType: 'prescription',
+    entityId: prescription._id,
+    patientId: prescription.patientId,
+  });
   response.json({ success: true });
 }));
 
@@ -1095,6 +1174,7 @@ app.post('/api/vitals', authenticate, allow('doctor'), asyncRoute(async (request
     ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value === '' ? null : value])),
     notes: notes || '',
   });
+  await audit(request, { action: 'vital.created', entityType: 'vital', entityId: vital._id, patientId: targetPatientId });
   response.status(201).json({ vital });
 }));
 
@@ -1118,6 +1198,12 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
     response.status(404).json({ error: 'Vital record not found.' });
     return;
   }
+  await audit(request, {
+    action: 'vital.updated',
+    entityType: 'vital',
+    entityId: vital._id,
+    patientId: vital.patientId,
+  });
   response.json({ vital });
 }));
 
@@ -1131,6 +1217,12 @@ app.delete('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (r
     response.status(404).json({ error: 'Vital record not found.' });
     return;
   }
+  await audit(request, {
+    action: 'vital.deleted',
+    entityType: 'vital',
+    entityId: vital._id,
+    patientId: vital.patientId,
+  });
   response.json({ success: true });
 }));
 

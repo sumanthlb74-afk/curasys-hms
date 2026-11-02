@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Appointment from './Appointment.js';
+import AuditLog from './AuditLog.js';
 import Bed from './Bed.js';
 import Billing from './Billing.js';
 import ClinicalNote from './ClinicalNote.js';
@@ -16,6 +17,15 @@ test('shared contact validators reject wrong types and oversized values', () => 
   assert.equal(isOptionalAddress({}), false);
   assert.equal(isOptionalAddress('a'.repeat(501)), false);
   assert.equal(isOptionalString(undefined, 20), true);
+});
+
+test('audit records require actor role, action, and entity type', async () => {
+  const error = await getValidationError(new AuditLog({
+    actorRole: 'doctor',
+    action: 'vital.created',
+    entityType: 'vital',
+  }));
+  assert.equal(error, null);
 });
 
 async function getValidationError(document) {

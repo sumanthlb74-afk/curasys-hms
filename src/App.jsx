@@ -824,6 +824,7 @@ function AdminDashboard({ notify }) {
     { key: 'appointments', path: '/appointments' },
     { key: 'staff', path: '/staff' },
     { key: 'doctors', path: '/doctors' },
+    { key: 'audit', path: '/audit' },
   ]);
   const patients = data.patients?.patients || [];
   const beds = data.beds?.beds || [];
@@ -831,6 +832,7 @@ function AdminDashboard({ notify }) {
   const appointments = data.appointments?.appointments || [];
   const bills = data.billing?.bills || [];
   const doctors = data.doctors?.doctors || [];
+  const auditItems = data.audit?.items || [];
   const wardTotals = wards.map((ward) => totals.find((item) => item._id === ward) || {
     _id: ward,
     total: 0,
@@ -931,7 +933,12 @@ function AdminDashboard({ notify }) {
     } catch (error) { notify(error.message, 'error'); }
   };
   const deletePatient = async (patient) => {
-    if (!window.confirm(`Deactivate ${patient.name}'s account? Their patient record and medical history will be retained.`)) return;
+    const confirmation = window.prompt(`To deactivate ${patient.name}'s account and retain their medical history, type their health ID: ${patient.uhid}`);
+    if (confirmation === null) return;
+    if (confirmation.trim() !== patient.uhid) {
+      notify('The health ID did not match. The patient account was not changed.', 'error');
+      return;
+    }
     try {
       await api.delete(`/patients/${patient._id}`);
       notify('Patient account deactivated; medical history retained.');
@@ -1011,6 +1018,9 @@ function AdminDashboard({ notify }) {
         <Card title={`Patient directory · ${patients.length}`} icon={Users}>{patients.length === 0 ? <Empty>No patients are registered.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{patients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Remove chart</button></div>)}</div>}</Card>
         <Card title={`Appointment overview · ${appointments.length}`} icon={CalendarDays}>{appointments.length === 0 ? <Empty>No appointments are booked.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{appointments.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.department} · {item.status}</p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p></div>)}</div>}</Card>
       </div>
+      <Card title="Audit log" icon={ShieldCheck}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : auditItems.length === 0 ? <Empty>No audited actions have been recorded.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Time</th><th scope="col" className="pb-3">Actor</th><th scope="col" className="pb-3">Action</th><th scope="col" className="pb-3">Record</th><th scope="col" className="pb-3">Patient</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{auditItems.map((item) => <tr key={item._id}><td className="py-3">{new Date(item.at).toLocaleString()}</td><td>{item.actorId?.name || item.actorRole}</td><td>{item.action}</td><td>{item.entityType}</td><td>{item.patientId?.name || '—'}</td></tr>)}</tbody></table><p className="mt-3 text-xs text-slate-500">Showing the most recent {auditItems.length} of {data.audit.total} recorded actions.</p></div>}
+      </Card>
     </main>
   );
 }
