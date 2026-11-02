@@ -635,6 +635,12 @@ function DoctorDashboard({ user, notify }) {
   const [filter, setFilter] = useState('Scheduled');
   const [profilePatientId, setProfilePatientId] = useState('');
   const profilePatient = patients.find((item) => item._id === profilePatientId);
+  const patientChart = [
+    ...clinicalNotes.map((record) => ({ record, type: 'Visit note', at: record.createdAt })),
+    ...prescriptions.map((record) => ({ record, type: 'Prescription', at: record.createdAt })),
+    ...vitals.map((record) => ({ record, type: 'Vitals', at: record.createdAt })),
+  ].filter(({ record }) => String(record.patientId?._id || record.patientId) === profilePatientId)
+    .sort((left, right) => new Date(right.at) - new Date(left.at));
 
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
   const savePrescription = async (event) => {
@@ -669,6 +675,38 @@ function DoctorDashboard({ user, notify }) {
       setClinicalNote(emptyClinicalNote);
       refresh();
     } catch (error) { notify(error.message, 'error'); }
+  };
+  const editRecord = async (path, recordId, values) => {
+    try {
+      await api.put(`${path}/${recordId}`, values);
+      notify('Record updated.');
+      refresh();
+    } catch (error) { notify(error.message, 'error'); }
+  };
+  const deleteRecord = async (path, recordId, label) => {
+    if (!window.confirm(`Delete this ${label}? This action is recorded in the audit log.`)) return;
+    try {
+      await api.delete(`${path}/${recordId}`);
+      notify(`${label} deleted.`);
+      refresh();
+    } catch (error) { notify(error.message, 'error'); }
+  };
+  const editClinicalNote = (note) => {
+    const assessment = window.prompt('Edit assessment', note.assessment);
+    if (assessment === null) return;
+    const plan = window.prompt('Edit care plan', note.plan);
+    if (plan === null) return;
+    void editRecord('/clinical-notes', note._id, { assessment, plan });
+  };
+  const editPrescription = (item) => {
+    const diagnosis = window.prompt('Edit diagnosis', item.diagnosis);
+    if (diagnosis === null) return;
+    void editRecord('/prescriptions', item._id, { diagnosis });
+  };
+  const editVital = (item) => {
+    const notes = window.prompt('Edit clinical notes', item.notes || '');
+    if (notes === null) return;
+    void editRecord('/vitals', item._id, { notes });
   };
   const updateAppointment = async (id, values) => {
     try {
@@ -740,13 +778,16 @@ function DoctorDashboard({ user, notify }) {
         </form>
       </Card>
       <Card title="Visit notes authored" icon={ClipboardList}>
-        {clinicalNotes.length === 0 ? <Empty>No clinical visit notes have been added.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="flex justify-between gap-2"><p className="font-semibold">{note.patientId?.name} · {note.patientId?.uhid}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p><p className="mt-1 text-sm"><span className="font-medium">Assessment:</span> {note.assessment}</p><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{note.plan}</p></article>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No clinical visit notes have been added.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="flex justify-between gap-2"><p className="font-semibold">{note.patientId?.name} · {note.patientId?.uhid}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p><p className="mt-1 text-sm"><span className="font-medium">Assessment:</span> {note.assessment}</p><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{note.plan}</p>{note.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editClinicalNote(note)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/clinical-notes', note._id, 'visit note')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</article>)}</div>}
       </Card>
       <Card title="Prescriptions authored" icon={ClipboardList}>
-        {prescriptions.length === 0 ? <Empty>No prescriptions have been written yet.</Empty> : <div className="grid gap-3 md:grid-cols-2">{prescriptions.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">{item.medicines.map((medicine) => `${medicine.name} ${medicine.dosage} · ${medicine.frequency} · ${medicine.duration}`).join(', ')}</p>{item.instructions && <p className="mt-2 text-sm">{item.instructions}</p>}{item.followUp && <p className="mt-1 text-xs text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}</div>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been written yet.</Empty> : <div className="grid gap-3 md:grid-cols-2">{prescriptions.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">{item.medicines.map((medicine) => `${medicine.name} ${medicine.dosage} · ${medicine.frequency} · ${medicine.duration}`).join(', ')}</p>{item.instructions && <p className="mt-2 text-sm">{item.instructions}</p>}{item.followUp && <p className="mt-1 text-xs text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editPrescription(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/prescriptions', item._id, 'prescription')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
       </Card>
       <Card title="Patient clinical records" icon={Activity}>
-        {vitals.length === 0 ? <Empty>No clinical measurements have been entered.</Empty> : <div className="grid gap-3 md:grid-cols-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-sm">{item.notes}</p>}</div>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No clinical measurements have been entered.</Empty> : <div className="grid gap-3 md:grid-cols-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-sm">{item.notes}</p>}{item.recordedBy?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editVital(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/vitals', item._id, 'vital record')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
+      </Card>
+      <Card title="Patient-centered chart" icon={Activity}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : !profilePatient ? <Empty>Choose a patient above to view their complete recent chart.</Empty> : patientChart.length === 0 ? <Empty>No notes, prescriptions, or vitals are recorded for this patient.</Empty> : <div className="space-y-3">{patientChart.map(({ record, type }) => <article key={`${type}-${record._id}`} className="rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-700"><div className="flex justify-between gap-3"><strong>{type}</strong><time className="text-xs text-slate-500">{new Date(record.createdAt).toLocaleString()}</time></div><p className="mt-1">{type === 'Visit note' ? `${record.chiefComplaint} · ${record.assessment} · ${record.plan}` : type === 'Prescription' ? `${record.diagnosis} · ${record.medicines.map((medicine) => medicine.name).join(', ')}` : [['HR', record.heartRate], ['BP', record.systolic && record.diastolic ? `${record.systolic}/${record.diastolic}` : null], ['Temp °C', record.temperatureC], ['O₂ %', record.oxygenSaturation]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p></article>)}</div>}
       </Card>
     </main>
   );
@@ -788,6 +829,14 @@ function StaffDashboard({ notify }) {
     try {
       await api.put(`/appointments/${id}`, values);
       notify('Appointment updated.');
+      refresh();
+    } catch (error) { notify(error.message, 'error'); }
+  };
+  const cancelAppointment = async (id) => {
+    if (!window.confirm('Cancel this appointment?')) return;
+    try {
+      await api.delete(`/appointments/${id}`);
+      notify('Appointment cancelled.');
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
@@ -838,12 +887,55 @@ function StaffDashboard({ notify }) {
         </Card>
       </div>
       <Card title={`OPD coordination queue · ${appointments.length}`} icon={CalendarDays}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Visit</th><th scope="col" className="pb-3">Doctor</th><th scope="col" className="pb-3">Triage</th><th scope="col" className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3"><p className="font-medium">{item.patientId?.name}</p><p className="text-xs text-slate-500">{item.patientId?.uhid}</p></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p><p className="max-w-56 truncate text-xs text-slate-500">{item.symptoms}</p></td><td><Select aria-label={`Doctor for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.doctorId?._id || ''} onChange={(event) => updateAppointment(item._id, { doctorId: event.target.value })}><option value="">Unassigned</option>{doctors.filter((doctor) => doctor.specialization === item.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></td><td><Select aria-label={`Triage for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.triage} onChange={(event) => updateAppointment(item._id, { triage: event.target.value })}>{triageLevels.map((value) => <option key={value}>{value}</option>)}</Select></td><td><Select aria-label={`Status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((value) => <option key={value}>{value}</option>)}</Select></td></tr>)}</tbody></table></div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Visit</th><th scope="col" className="pb-3">Doctor</th><th scope="col" className="pb-3">Triage</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3"><p className="font-medium">{item.patientId?.name}</p><p className="text-xs text-slate-500">{item.patientId?.uhid}</p></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p><p className="max-w-56 truncate text-xs text-slate-500">{item.symptoms}</p></td><td><Select aria-label={`Doctor for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.doctorId?._id || ''} onChange={(event) => updateAppointment(item._id, { doctorId: event.target.value })}><option value="">Unassigned</option>{doctors.filter((doctor) => doctor.specialization === item.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></td><td><Select aria-label={`Triage for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.triage} onChange={(event) => updateAppointment(item._id, { triage: event.target.value })}>{triageLevels.map((value) => <option key={value}>{value}</option>)}</Select></td><td><Select aria-label={`Status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((value) => <option key={value}>{value}</option>)}</Select></td><td>{item.status === 'Scheduled' && <button type="button" onClick={() => cancelAppointment(item._id)} className="text-xs font-semibold text-rose-700 underline dark:text-rose-300">Cancel</button>}</td></tr>)}</tbody></table></div>}
       </Card>
       <Card title={`Bed assignments · ${beds.length}`} icon={BedDouble}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : beds.length === 0 ? <Empty>No beds are configured yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Bed</th><th scope="col" className="pb-3">Ward</th><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select aria-label={`Patient assigned to bed ${bed.bedNumber}`} value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select aria-label={`Status of bed ${bed.bedNumber}`} value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><button type="button" onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button></td></tr>)}</tbody></table></div>}
       </Card>
     </main>
+  );
+}
+
+function EditPatientDialog({ patient, notify, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: patient.name || '',
+    email: patient.email || '',
+    phone: patient.phone || '',
+    address: patient.address || '',
+    heightCm: patient.heightCm ?? '',
+    weightKg: patient.weightKg ?? '',
+  });
+  const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      await api.put(`/patients/${patient._id}`, {
+        ...form,
+        heightCm: form.heightCm === '' ? null : Number(form.heightCm),
+        weightKg: form.weightKg === '' ? null : Number(form.weightKg),
+      });
+      notify('Patient chart updated.');
+      onSaved();
+      onClose();
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+  };
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="edit-patient-title" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4">
+      <section className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+        <h2 id="edit-patient-title" className="text-lg font-bold">Edit patient chart · {patient.uhid}</h2>
+        <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-2">
+          <Field label="Full name"><Input value={form.name} onChange={change('name')} maxLength="100" required /></Field>
+          <Field label="Email"><Input type="email" value={form.email} onChange={change('email')} maxLength="254" required /></Field>
+          <Field label="Phone"><Input value={form.phone} onChange={change('phone')} maxLength="30" /></Field>
+          <Field label="Address"><Textarea rows="2" value={form.address} onChange={change('address')} maxLength="500" /></Field>
+          <Field label="Height (cm) · blank clears value"><Input type="number" min="30" max="250" step="0.1" value={form.heightCm} onChange={change('heightCm')} /></Field>
+          <Field label="Weight (kg) · blank clears value"><Input type="number" min="1" max="500" step="0.1" value={form.weightKg} onChange={change('weightKg')} /></Field>
+          <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">Cancel</button><button className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Save changes</button></div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -879,6 +971,7 @@ function AdminDashboard({ notify }) {
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
   const [billForm, setBillForm] = useState(newBillForm);
   const [assignment, setAssignment] = useState({});
+  const [editingPatient, setEditingPatient] = useState(null);
   const refresh = useCallback(() => {
     setAssignment({});
     loadData();
@@ -979,6 +1072,24 @@ function AdminDashboard({ notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
+  const resetPatientPassword = async (patient) => {
+    const password = window.prompt(`Enter a new temporary password for ${patient.name} (8–72 characters).`);
+    if (password === null) return;
+    if (new TextEncoder().encode(password).length < 8 || new TextEncoder().encode(password).length > 72) {
+      notify('Use a temporary password between 8 and 72 bytes.', 'error');
+      return;
+    }
+    if (window.prompt('Confirm the temporary password by entering it again.') !== password) {
+      notify('The passwords did not match. No reset was made.', 'error');
+      return;
+    }
+    try {
+      await api.post(`/patients/${patient._id}/reset-password`, { password });
+      notify('Password reset. The patient must change it at next sign-in.');
+      window.alert(`Share this temporary password securely with ${patient.name}: ${password}`);
+      refresh();
+    } catch (error) { notify(error.message, 'error'); }
+  };
 
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
@@ -1051,12 +1162,13 @@ function AdminDashboard({ notify }) {
         <Card title={`Medical staff · ${staffMembers.length}`} icon={Stethoscope}>
           {staffMembers.length === 0 ? <Empty>No staff accounts have been created.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{staffMembers.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.uhid}</span></div>)}</div>}
         </Card>
-        <Card title={`Patient directory · ${patients.length}`} icon={Users}>{patients.length === 0 ? <Empty>No patients are registered.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{patients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Remove chart</button></div>)}</div>}</Card>
+        <Card title={`Patient directory · ${data.patients?.total ?? patients.length}`} icon={Users}>{loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : patients.length === 0 ? <Empty>No patients match this search.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{patients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><div className="flex gap-3"><button onClick={() => setEditingPatient(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button onClick={() => resetPatientPassword(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Reset password</button><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Deactivate</button></div></div>)}</div>}</Card>
         <Card title={`Appointment overview · ${appointments.length}`} icon={CalendarDays}>{appointments.length === 0 ? <Empty>No appointments are booked.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{appointments.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.department} · {item.status}</p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p></div>)}</div>}</Card>
       </div>
       <Card title="Audit log" icon={ShieldCheck}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : auditItems.length === 0 ? <Empty>No audited actions have been recorded.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Time</th><th scope="col" className="pb-3">Actor</th><th scope="col" className="pb-3">Action</th><th scope="col" className="pb-3">Record</th><th scope="col" className="pb-3">Patient</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{auditItems.map((item) => <tr key={item._id}><td className="py-3">{new Date(item.at).toLocaleString()}</td><td>{item.actorId?.name || item.actorRole}</td><td>{item.action}</td><td>{item.entityType}</td><td>{item.patientId?.name || '—'}</td></tr>)}</tbody></table><p className="mt-3 text-xs text-slate-500">Showing the most recent {auditItems.length} of {data.audit.total} recorded actions.</p></div>}
       </Card>
+      {editingPatient && <EditPatientDialog key={editingPatient._id} patient={editingPatient} notify={notify} onClose={() => setEditingPatient(null)} onSaved={refresh} />}
     </main>
   );
 }
