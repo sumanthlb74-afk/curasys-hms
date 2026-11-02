@@ -37,16 +37,13 @@ async function getValidationError(document) {
   }
 }
 
-test('user schema requires identity, role, password, and generated UHID', () => {
-  const errorPromise = getValidationError(new User({ email: 'not-an-email', role: 'guest' }));
-  return errorPromise.then((error) => {
-    assert.ok(error);
-    assert.ok(error.errors.name);
-    assert.ok(error.errors.password);
-    assert.ok(error.errors.uhid);
-    assert.ok(error.errors.role);
-    assert.ok(error.errors.email);
-  });
+test('patient accounts require identity, role, password, and a UHID', async () => {
+  const error = await getValidationError(new User({ email: 'not-an-email', role: 'patient' }));
+  assert.ok(error);
+  assert.ok(error.errors.name);
+  assert.ok(error.errors.password);
+  assert.ok(error.errors.uhid);
+  assert.ok(error.errors.email);
 });
 
 test('user schema accepts the medical staff role', async () => {
@@ -55,9 +52,23 @@ test('user schema accepts the medical staff role', async () => {
     email: 'staff@example.test',
     password: 'a-secure-password',
     role: 'staff',
-    uhid: 'CUR-2026-1234',
   }));
   assert.equal(error, null);
+});
+
+test('only patients require UHIDs and the string UHID index is partial and unique', async () => {
+  const staff = new User({
+    name: 'Clinic Staff',
+    email: 'staff-without-uhid@example.test',
+    password: 'a-secure-password',
+    role: 'staff',
+  });
+  assert.equal(staff.uhid, null);
+  assert.equal(await getValidationError(staff), null);
+  const index = User.schema.indexes().find(([keys]) => keys.uhid === 1);
+  assert.ok(index);
+  assert.equal(index[1].unique, true);
+  assert.deepEqual(index[1].partialFilterExpression, { uhid: { $type: 'string' } });
 });
 
 test('user schema defaults new accounts to active and current-password sessions', () => {

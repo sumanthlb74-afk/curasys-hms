@@ -20,7 +20,7 @@ const userSchema = new mongoose.Schema({
   },
   password: { type: String, required: true, minlength: 8, select: false },
   role: { type: String, enum: ['patient', 'doctor', 'staff', 'admin'], required: true },
-  uhid: { type: String, unique: true, required: true },
+  uhid: { type: String, default: null, required() { return this.role === 'patient'; } },
   registeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   isActive: { type: Boolean, default: true },
   deletedAt: { type: Date, default: null },
@@ -41,6 +41,11 @@ const userSchema = new mongoose.Schema({
   heightCm: { type: Number, min: 30, max: 250, default: null },
   weightKg: { type: Number, min: 1, max: 500, default: null },
 }, { timestamps: true });
+
+userSchema.index(
+  { uhid: 1 },
+  { unique: true, partialFilterExpression: { uhid: { $type: 'string' } } },
+);
 
 userSchema.pre('save', async function hashPassword() {
   if (this.isModified('password')) {

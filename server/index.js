@@ -227,9 +227,17 @@ function validPassword(value) {
   return byteLength >= 8 && byteLength <= 72;
 }
 
-function assignUhid() {
-  const suffix = crypto.randomBytes(6).toString('hex').toUpperCase();
-  return `CUR-${new Date().getFullYear()}-${suffix}`;
+async function assignUhid() {
+  const year = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: process.env.HOSPITAL_TZ || 'Asia/Kolkata',
+    year: 'numeric',
+  }).formatToParts(new Date()).map(({ type, value }) => [type, value])).year;
+  const counter = await Counter.findOneAndUpdate(
+    { name: `uhid-${year}` },
+    { $inc: { value: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true },
+  );
+  return `CUR-${year}-${String(counter.value).padStart(6, '0')}`;
 }
 
 async function nextInvoiceNumber() {
@@ -272,7 +280,7 @@ async function createUser({
         currentMedications: currentMedications || [],
         heightCm: heightCm === '' || heightCm === undefined ? null : heightCm,
         weightKg: weightKg === '' || weightKg === undefined ? null : weightKg,
-        uhid: assignUhid(),
+        uhid: role === 'patient' ? await assignUhid() : null,
       });
     } catch (error) {
       if (error.code === 11000 && error.keyPattern?.uhid && attempt < 4) continue;

@@ -36,6 +36,8 @@ Create the first administrator using **Initial admin setup** and the private key
 
 The Render Blueprint creates a static React frontend and a separate Express API. The frontend is configured to call the API origin, and the API allows the frontend origin through CORS.
 
+Before deploying the patient-only sequential UHID schema to an existing Atlas database, take a database backup, configure `MONGODB_URI` in `server/.env`, and run `npm.cmd run migrate:uhid`. The migration is idempotent, preserves existing patient UHIDs, clears UHIDs from non-patient accounts, and creates the partial unique index. Do not run it against a database you have not backed up.
+
 ### Free Render web service
 
 The repository includes a Render Blueprint (`render.yaml`) for both free services. Free services can sleep when idle and may take time to wake up.
