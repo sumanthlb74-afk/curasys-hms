@@ -12,9 +12,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: CLINIC_START_HOUR
-        value: 8
+        value: "8"
       - key: CLINIC_END_HOUR
-        value: 20
+        value: "20"
       - key: CLIENT_ORIGIN
         value: https://curasys-hms.onrender.com
       - key: MONGODB_URI
@@ -35,9 +35,9 @@ services:
       - key: VITE_API_BASE_URL
         value: https://curasys-hms-api.onrender.com/api
       - key: VITE_CLINIC_START_HOUR
-        value: 8
+        value: "8"
       - key: VITE_CLINIC_END_HOUR
-        value: 20
+        value: "20"
     routes:
       - type: rewrite
         source: /*
