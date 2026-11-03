@@ -40,6 +40,22 @@ const appointmentSlots = Array.from({ length: clinicEndHour - clinicStartHour },
   return { time, label: `${startLabel} – ${endLabel} (${time}–${endTime})` };
 });
 
+let apiWarmupPromise;
+let setupStatusPromise;
+function wakeApi() {
+  if (!apiWarmupPromise) {
+    apiWarmupPromise = api.get('/health', { timeout: 60_000 }).catch(() => null);
+  }
+  return apiWarmupPromise;
+}
+
+function getSetupStatus() {
+  if (!setupStatusPromise) {
+    setupStatusPromise = wakeApi().then(() => api.get('/auth/setup-status'));
+  }
+  return setupStatusPromise;
+}
+
 function localDateValue(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -207,6 +223,9 @@ function PaginationControls({ page, total, limit, onPageChange }) {
 }
 
 function App() {
+  useEffect(() => {
+    void wakeApi();
+  }, []);
   return (
     <BrowserRouter>
       <AppRoutes />
@@ -390,7 +409,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   useEffect(() => {
     if (patientOnly) return;
-    api.get('/auth/setup-status')
+    getSetupStatus()
       .then(({ data }) => setSetupOpen(data.setupOpen))
       .catch(() => setSetupOpen(false));
   }, [patientOnly]);
