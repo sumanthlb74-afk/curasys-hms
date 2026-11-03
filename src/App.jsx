@@ -323,6 +323,7 @@ function AppRoutes() {
       <Toast toast={toast} onClose={dismissToast} />
       <Routes>
         <Route path="/login" element={user ? <Navigate to={path} replace /> : <AuthPage onAuth={onAuth} notify={notify} />} />
+        <Route path="/patient-login" element={user ? <Navigate to={path} replace /> : <AuthPage onAuth={onAuth} notify={notify} patientOnly />} />
         <Route path="/change-password" element={user ? <ChangePasswordPage user={user} onAuth={onAuth} notify={notify} /> : <Navigate to="/login" replace />} />
         <Route path="/patient-portal" element={<Protected user={user} role="patient"><PatientDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/doctor-dashboard" element={<Protected user={user} role="doctor"><DoctorDashboard user={user} notify={notify} /></Protected>} />
@@ -379,7 +380,7 @@ function ChangePasswordPage({ user, onAuth, notify, required = false }) {
   );
 }
 
-function AuthPage({ onAuth, notify }) {
+function AuthPage({ onAuth, notify, patientOnly = false }) {
   const [mode, setMode] = useState('login');
   const [loading, setLoading] = useState(false);
   const [showWakeMessage, setShowWakeMessage] = useState(false);
@@ -404,6 +405,10 @@ function AuthPage({ onAuth, notify }) {
         ? { name: form.name, email: form.email, password: form.password, phone: form.phone, adminRegistrationKey: form.adminRegistrationKey, role: 'admin' }
         : { email: form.email, password: form.password };
       const { data } = await api.post(isRegister ? '/auth/register' : '/auth/login', payload);
+      if (patientOnly && data.user.role !== 'patient') {
+        notify('This sign-in page is for patients. Use the staff and administrator sign-in page for hospital accounts.', 'error');
+        return;
+      }
       notify(mode === 'login' ? 'Welcome back.' : 'Your account has been created.');
       onAuth(data);
     } catch (error) {
@@ -418,12 +423,12 @@ function AuthPage({ onAuth, notify }) {
       <section className="w-full max-w-lg rounded-3xl border border-white/80 bg-white/90 p-7 shadow-2xl shadow-slate-900/10 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/90 sm:p-9">
         <div className="mb-7 text-center">
           <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-teal-600 text-white shadow-lg shadow-teal-600/30"><Activity className="h-7 w-7" /></div>
-          <h1 className="text-2xl font-bold tracking-tight">Curasys Medical Center</h1>
-          <p className="mt-1 text-sm text-slate-500">Hospital information system</p>
+          <h1 className="text-2xl font-bold tracking-tight">{patientOnly ? 'Patient portal' : 'Curasys Medical Center'}</h1>
+          <p className="mt-1 text-sm text-slate-500">{patientOnly ? 'Sign in with the email and temporary password provided by your care team.' : 'Hospital information system'}</p>
         </div>
-        <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+        {!patientOnly && <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
           {['login', 'register'].map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item === 'register' ? 'Administrator setup' : 'Sign in'}</button>)}
-        </div>
+        </div>}
         <form onSubmit={submit} className="grid gap-4">
           {isRegister && <Field label="Full name"><Input value={form.name} onChange={change('name')} autoComplete="name" required maxLength={100} /></Field>}
           <Field label="Email"><Input type="email" value={form.email} onChange={change('email')} autoComplete="email" required /></Field>
@@ -431,10 +436,15 @@ function AuthPage({ onAuth, notify }) {
           {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} maxLength={72} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
           {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
-          {isRegister && <p className="text-xs leading-relaxed text-slate-500">Administrator setup requires the private key from the project owner. The first administrator can set up the account directly; additional administrators must change their temporary password at first sign-in.</p>}
-          {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">The server may be waking up. Keep this page open. If the request times out, try signing in with the same email before submitting again.</p>}
-          <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : 'Sign in securely'}</button>
+          {isRegister && <p className="text-xs leading-relaxed text-slate-500">Administrator setup requires the private key from the project owner. Use an email address not already used by another account. Additional administrators must change their temporary password at first sign-in.</p>}
+          {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">Render's free API may sleep after inactivity and can take about a minute to wake. Keep this page open. If the request times out, try signing in with the same email before submitting again.</p>}
+          <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : patientOnly ? 'Sign in to patient portal' : 'Sign in securely'}</button>
         </form>
+        <p className="mt-4 text-center text-sm text-slate-500">
+          {patientOnly
+            ? <>Hospital staff? <Link to="/login" className="font-semibold text-teal-700 hover:underline dark:text-teal-300">Staff sign in</Link></>
+            : <>Patient? <Link to="/patient-login" className="font-semibold text-teal-700 hover:underline dark:text-teal-300">Open the patient portal</Link></>}
+        </p>
         <p className="mt-5 text-center text-xs text-slate-500">Use fictional information only. This school project is not for real patient data.</p>
       </section>
     </main>

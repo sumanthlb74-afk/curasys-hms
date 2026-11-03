@@ -159,8 +159,8 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.notEqual(storedAdmin.password, 'AdminPassword1!');
 
   for (const [name, email, password] of [
-    ['Second Administrator', 'admin-two@example.test', 'AdminPassword2!'],
-    ['Third Administrator', 'admin-three@example.test', 'AdminPassword3!'],
+    ['Additional Administrator', 'additional-admin@example.test', 'AdminPassword3!'],
+    ['Another Administrator', 'another-admin@example.test', 'AdminPassword4!'],
   ]) {
     const additionalAdministrator = await api('/api/auth/register', {
       method: 'POST',
@@ -175,7 +175,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     });
     assert.equal(additionalAdministrator.status, 201);
     assert.equal(additionalAdministrator.body.user.mustChangePassword, true);
-    if (email === 'admin-two@example.test') {
+    if (email === 'additional-admin@example.test') {
       const duplicateAdministrator = await api('/api/auth/register', {
         method: 'POST',
         body: {
@@ -197,8 +197,8 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 3);
 
   for (const [name, email, password] of [
-    ['Second Administrator', 'admin-two@example.test', 'AdminPassword2!'],
-    ['Third Administrator', 'admin-three@example.test', 'AdminPassword3!'],
+    ['Dashboard Administrator One', 'dashboard-admin-one@example.test', 'AdminPassword5!'],
+    ['Dashboard Administrator Two', 'dashboard-admin-two@example.test', 'AdminPassword6!'],
   ]) {
     const creation = await api('/api/admins', {
       method: 'POST',
@@ -212,8 +212,8 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     assert.equal(administratorLogin.status, 200);
     assert.equal(administratorLogin.body.user.mustChangePassword, true);
   }
-  assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 3);
-  assert.equal((await api('/api/admins', { token: adminToken })).body.administrators.length, 3);
+  assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 5);
+  assert.equal((await api('/api/admins', { token: adminToken })).body.administrators.length, 5);
   assert.equal((await api('/api/admins')).status, 401);
 
   for (const role of ['doctor', 'staff', 'patient']) {
