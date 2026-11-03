@@ -432,7 +432,7 @@ function AuthPage({ onAuth, notify }) {
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
           {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
           {isRegister && <p className="text-xs leading-relaxed text-slate-500">Administrator setup requires the private key from the project owner. The first administrator can set up the account directly; additional administrators must change their temporary password at first sign-in.</p>}
-          {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">The server may be waking up. This can take up to a minute.</p>}
+          {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">The server may be waking up. Keep this page open. If the request times out, try signing in with the same email before submitting again.</p>}
           <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : 'Sign in securely'}</button>
         </form>
         <p className="mt-5 text-center text-xs text-slate-500">Use fictional information only. This school project is not for real patient data.</p>

@@ -150,6 +150,40 @@ test('administrator setup rejects an invalid registration key', async () => {
   assert.equal(response.status, 403);
 });
 
+test('administrator setup rate limiting allows reasonable retries and has an actionable response', async () => {
+  const headers = {
+    'content-type': 'application/json',
+    'x-forwarded-for': '198.51.100.240',
+  };
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: 'Test Admin',
+        email: `rate-limit-${attempt}@example.test`,
+        password: 'a-secure-password',
+        role: 'admin',
+        adminRegistrationKey: 'incorrect-key',
+      }),
+    });
+    assert.equal(response.status, 403);
+  }
+  const limited = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: 'Test Admin',
+      email: 'rate-limit-final@example.test',
+      password: 'a-secure-password',
+      role: 'admin',
+      adminRegistrationKey: 'incorrect-key',
+    }),
+  });
+  assert.equal(limited.status, 429);
+  assert.match((await limited.json()).error, /sign in first if a previous submission may have succeeded/i);
+});
+
 test('administrator setup clearly reports a missing server-side key', async () => {
   const originalKey = process.env.ADMIN_REGISTRATION_KEY;
   delete process.env.ADMIN_REGISTRATION_KEY;

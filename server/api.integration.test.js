@@ -175,6 +175,21 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     });
     assert.equal(additionalAdministrator.status, 201);
     assert.equal(additionalAdministrator.body.user.mustChangePassword, true);
+    if (email === 'admin-two@example.test') {
+      const duplicateAdministrator = await api('/api/auth/register', {
+        method: 'POST',
+        body: {
+          name,
+          email,
+          password,
+          role: 'admin',
+          adminRegistrationKey: process.env.ADMIN_REGISTRATION_KEY,
+        },
+        sourceIp: '198.51.100.12',
+      });
+      assert.equal(duplicateAdministrator.status, 409);
+      assert.match(duplicateAdministrator.body.error, /sign in with that email and password/i);
+    }
     const additionalLogin = await login(email, password);
     assert.equal(additionalLogin.status, 200);
     assert.equal(additionalLogin.body.user.mustChangePassword, true);

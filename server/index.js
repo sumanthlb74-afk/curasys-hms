@@ -75,10 +75,10 @@ const authLimiter = rateLimit({
 });
 const registrationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  limit: 5,
+  limit: 20,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
-  message: { error: 'Too many account registration attempts. Try again later.' },
+  message: { error: 'Too many account registration attempts from this network. Wait before trying again, and sign in first if a previous submission may have succeeded.' },
 });
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -1428,6 +1428,12 @@ app.use((error, _request, response, next) => {
     return;
   }
   if (error.code === 11000) {
+    if (error.keyPattern?.email || error.keyValue?.email) {
+      response.status(409).json({
+        error: 'An account with that email already exists. If you already submitted this account, sign in with that email and password; otherwise use a different email.',
+      });
+      return;
+    }
     if (error.keyPattern?.doctorId && error.keyPattern?.date && error.keyPattern?.time) {
       response.status(409).json({ error: 'That slot was just taken. Choose another time.' });
       return;
