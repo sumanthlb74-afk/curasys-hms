@@ -30,7 +30,21 @@ npm.cmd run dev
 
 Open the Vite local URL printed by the command (normally `http://localhost:5173/`). Leave the terminal open while using the app. Stop both services with `Ctrl+C`.
 
-Register administrators using **Administrator setup** and the private key from `server/.env`. The same key is required for every admin registration and is never exposed by the API. Each account needs an email address not used by another account. A unique database index protects concurrent initial-setup attempts. Additional administrators must change their temporary password at first sign-in; existing administrators can also provision admins from their dashboard. If the key is missing on the API, setup returns a clear configuration error; a wrong key is rejected without revealing the configured value. Administrators create doctor and medical staff accounts. Administrators, doctors, and medical staff can register patients. New staff, doctors, and patients must change their temporary password at first sign-in. Patients can open `/patient-login` directly or use the patient portal link on the sign-in page, then enter the email and temporary password entered by the staff member, doctor, or administrator who registered them; email matching is case-insensitive. The patient-only sign-in page rejects non-patient accounts. No seeded demo login is available.
+Initial administrator setup is available only while no administrator exists, using the private `ADMIN_REGISTRATION_KEY` from `server/.env`. The key must be at least 32 characters. After the first administrator is created, public setup closes by default; temporarily set `ADMIN_SETUP_ENABLED=true` on the API only when you need key-gated public setup for another administrator, then remove the setting. The setup tab is shown only while the API reports setup is open. An administrator can create additional administrator accounts from the dashboard. Each account needs an email address not used by another account. A unique database index protects concurrent bootstrap attempts. Public-route administrators keep the password they choose; administrator-created accounts must change their temporary password at first sign-in. Wrong keys receive a generic error. See [Lost administrator access](#lost-administrator-access) for the offline recovery command.
+
+Administrators create doctor and medical staff accounts. Administrators, doctors, and medical staff can register patients. New staff, doctors, and patients must change their temporary password at first sign-in. Patients can open `/patient-login` directly or use the patient portal link on the sign-in page, then enter the email and temporary password entered by the staff member, doctor, or administrator who registered them; email matching is case-insensitive. The patient-only sign-in page rejects non-patient accounts. No seeded demo login is available.
+
+### Lost administrator access
+
+Run this command only from a trusted machine that can reach the configured MongoDB database. It creates an administrator if the email is unused, or resets the password of an existing administrator with that email. It will not change a non-administrator account. Set `NEW_ADMIN_PASSWORD` in the environment; do not put a password on the command line:
+
+```powershell
+$env:NEW_ADMIN_PASSWORD = Read-Host "New temporary administrator password"
+npm.cmd run create-admin -- --name "Demo Administrator" --email "admin@example.com"
+Remove-Item Env:NEW_ADMIN_PASSWORD
+```
+
+The recovery action forces a password change at next sign-in and invalidates existing sessions. Keep MongoDB credentials and the temporary password private. The recovery script reads `MONGODB_URI` from the process environment or `server/.env`.
 
 ## Build and deploy
 

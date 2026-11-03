@@ -12,6 +12,7 @@ import Counter from './models/Counter.js';
 import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
+import { createOrResetAdmin } from './scripts/create-admin.js';
 
 const configuredTestUri = process.env.MONGODB_TEST_URI;
 let testUri;
@@ -41,7 +42,7 @@ before(async () => {
   if (!testUri) return;
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = 'integration-test-secret-with-at-least-32-characters';
-  process.env.ADMIN_REGISTRATION_KEY = 'integration-test-admin-key';
+  process.env.ADMIN_REGISTRATION_KEY = 'integration-test-admin-registration-key';
   process.env.HOSPITAL_TZ = 'UTC';
   process.env.CLINIC_START_HOUR = '0';
   process.env.CLINIC_END_HOUR = '24';
@@ -155,8 +156,28 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(admin.body.user.role, 'admin');
   assert.equal(await User.countDocuments({ role: 'admin' }), 1);
   assert.equal(await User.countDocuments({ isBootstrapAdmin: true }), 1);
+  assert.equal(admin.body.user.mustChangePassword, false);
   const storedAdmin = await User.findById(admin.body.user.id).select('+password');
   assert.notEqual(storedAdmin.password, 'AdminPassword1!');
+  const setupStatus = await api('/api/auth/setup-status');
+  assert.deepEqual(setupStatus.body, { setupOpen: false });
+  const setupClosed = await api('/api/auth/register', {
+    method: 'POST',
+    body: {
+      name: 'Blocked Administrator',
+      email: 'blocked-admin@example.test',
+      password: 'AdminPassword7!',
+      role: 'admin',
+      adminRegistrationKey: process.env.ADMIN_REGISTRATION_KEY,
+    },
+    sourceIp: '198.51.100.13',
+  });
+  assert.equal(setupClosed.status, 403);
+  assert.equal(setupClosed.body.error, 'Administrator setup is closed. Ask an existing administrator to create your account.');
+  assert.equal(setupClosed.body.error.includes('ADMIN_REGISTRATION_KEY'), false);
+  const originalSetupFlag = process.env.ADMIN_SETUP_ENABLED;
+  process.env.ADMIN_SETUP_ENABLED = 'true';
+  assert.deepEqual((await api('/api/auth/setup-status')).body, { setupOpen: true });
 
   for (const [name, email, password] of [
     ['Additional Administrator', 'additional-admin@example.test', 'AdminPassword3!'],
@@ -174,7 +195,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
       sourceIp: '198.51.100.11',
     });
     assert.equal(additionalAdministrator.status, 201);
-    assert.equal(additionalAdministrator.body.user.mustChangePassword, true);
+    assert.equal(additionalAdministrator.body.user.mustChangePassword, false);
     if (email === 'additional-admin@example.test') {
       const duplicateAdministrator = await api('/api/auth/register', {
         method: 'POST',
@@ -192,7 +213,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     }
     const additionalLogin = await login(email, password);
     assert.equal(additionalLogin.status, 200);
-    assert.equal(additionalLogin.body.user.mustChangePassword, true);
+    assert.equal(additionalLogin.body.user.mustChangePassword, false);
   }
   assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 3);
 
@@ -215,6 +236,33 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 5);
   assert.equal((await api('/api/admins', { token: adminToken })).body.administrators.length, 5);
   assert.equal((await api('/api/admins')).status, 401);
+  const adminRegistrationAudits = await AuditLog.find({ action: 'admin.registered' }).lean();
+  assert.equal(adminRegistrationAudits.length, 3);
+  assert.ok(adminRegistrationAudits.some((entry) => entry.note === 'bootstrap' && entry.actorRole === 'anonymous' && entry.entityId));
+  assert.ok(adminRegistrationAudits.some((entry) => entry.note === 'key-gated' && entry.actorRole === 'anonymous' && entry.entityId));
+  assert.equal(await AuditLog.countDocuments({ action: 'admin.created', actorRole: 'admin' }), 2);
+  if (originalSetupFlag === undefined) delete process.env.ADMIN_SETUP_ENABLED;
+  else process.env.ADMIN_SETUP_ENABLED = originalSetupFlag;
+
+  const recoveryEmail = `recovered-admin-${process.pid}@example.test`;
+  const recoveredAdministrator = await createOrResetAdmin({
+    name: 'Recovered Administrator',
+    email: recoveryEmail,
+    password: 'RecoveryPassword1!',
+  });
+  assert.equal(recoveredAdministrator.action, 'created');
+  assert.equal(recoveredAdministrator.user.role, 'admin');
+  assert.equal(recoveredAdministrator.user.mustChangePassword, true);
+  const recoveredVersion = recoveredAdministrator.user.sessionVersion;
+  const resetAdministrator = await createOrResetAdmin({
+    name: 'Recovered Administrator',
+    email: recoveryEmail,
+    password: 'RecoveryPassword2!',
+  });
+  assert.equal(resetAdministrator.action, 'reset');
+  assert.equal(resetAdministrator.user.mustChangePassword, true);
+  assert.equal(resetAdministrator.user.sessionVersion, recoveredVersion + 1);
+  assert.equal((await login(recoveryEmail, 'RecoveryPassword2!')).status, 200);
 
   for (const role of ['doctor', 'staff', 'patient']) {
     const response = await api('/api/auth/register', {
@@ -241,6 +289,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     },
   });
   assert.equal(doctorCreation.status, 201);
+  assert.equal(await AuditLog.countDocuments({ action: 'doctor.created', entityId: doctorCreation.body.doctor.id, actorRole: 'admin' }), 1);
   const invalidDoctorCreation = await api('/api/doctors', {
     method: 'POST',
     token: adminToken,
@@ -290,6 +339,17 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     },
   });
   assert.equal(secondDoctorCreation.status, 201);
+  const departmentChange = await api(`/api/doctors/${secondDoctorCreation.body.doctor.id}`, {
+    method: 'PUT',
+    token: adminToken,
+    body: { specialization: 'Cardiology' },
+  });
+  assert.equal(departmentChange.status, 200);
+  assert.equal(await AuditLog.countDocuments({
+    action: 'doctor.department_changed',
+    entityId: secondDoctorCreation.body.doctor.id,
+    actorRole: 'admin',
+  }), 1);
 
   const staffCreation = await api('/api/staff', {
     method: 'POST',
@@ -301,6 +361,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     },
   });
   assert.equal(staffCreation.status, 201);
+  assert.equal(await AuditLog.countDocuments({ action: 'staff.created', entityId: staffCreation.body.staff.id, actorRole: 'admin' }), 1);
   const staffLogin = await login('staff@example.test', 'StaffPassword1!');
   assert.equal(staffLogin.status, 200);
   const staffPasswordChange = await api('/api/auth/change-password', {
@@ -429,7 +490,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     body: {
       patientId: doctorPatient.body.patient.id,
       doctorId: secondDoctorCreation.body.doctor.id,
-      department: 'Cardiology',
+      department: 'Neurology',
       date: new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10),
       time: '09:00',
       symptoms: 'Department mismatch',
@@ -468,7 +529,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     body: {
       patientId: staffPatient.body.patient.id,
       doctorId: secondDoctorCreation.body.doctor.id,
-      department: 'Neurology',
+      department: 'Cardiology',
       date,
       time: '11:00',
       symptoms: 'Neurology review',

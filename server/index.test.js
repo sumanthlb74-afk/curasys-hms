@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import process from 'node:process';
 import test, { after, before } from 'node:test';
+import User from './models/User.js';
 import { isWithinClinicHours } from '../shared/clinic-hours.js';
 
 process.env.ADMIN_REGISTRATION_KEY = 'test-only-admin-registration-key';
-const { default: app } = await import('./index.js');
+const { default: app, startServer, validateAdminRegistrationKey } = await import('./index.js');
 
 let server;
 let baseUrl;
@@ -136,56 +137,71 @@ test('public registration cannot create doctor accounts', async () => {
 });
 
 test('administrator setup rejects an invalid registration key', async () => {
-  const response = await fetch(`${baseUrl}/api/auth/register`, {
-    method: 'POST',
-    headers: registrationHeaders(),
-    body: JSON.stringify({
-      name: 'Test Admin',
-      email: 'admin@example.test',
-      password: 'a-secure-password',
-      role: 'admin',
-      adminRegistrationKey: 'incorrect-key',
-    }),
-  });
-  assert.equal(response.status, 403);
-});
-
-test('administrator setup rate limiting allows reasonable retries and has an actionable response', async () => {
-  const headers = {
-    'content-type': 'application/json',
-    'x-forwarded-for': '198.51.100.240',
-  };
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const originalExists = User.exists;
+  User.exists = async () => null;
+  try {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
-      headers,
+      headers: registrationHeaders(),
       body: JSON.stringify({
         name: 'Test Admin',
-        email: `rate-limit-${attempt}@example.test`,
+        email: 'admin@example.test',
         password: 'a-secure-password',
         role: 'admin',
         adminRegistrationKey: 'incorrect-key',
       }),
     });
     assert.equal(response.status, 403);
+    assert.equal((await response.json()).error, 'Administrator setup is unavailable.');
+  } finally {
+    User.exists = originalExists;
   }
-  const limited = await fetch(`${baseUrl}/api/auth/register`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      name: 'Test Admin',
-      email: 'rate-limit-final@example.test',
-      password: 'a-secure-password',
-      role: 'admin',
-      adminRegistrationKey: 'incorrect-key',
-    }),
-  });
-  assert.equal(limited.status, 429);
-  assert.match((await limited.json()).error, /sign in first if a previous submission may have succeeded/i);
+});
+
+test('administrator setup rate limiting allows reasonable retries and has an actionable response', async () => {
+  const originalExists = User.exists;
+  User.exists = async () => null;
+  try {
+    const headers = {
+      'content-type': 'application/json',
+      'x-forwarded-for': '198.51.100.240',
+    };
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const response = await fetch(`${baseUrl}/api/auth/register`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: 'Test Admin',
+          email: `rate-limit-${attempt}@example.test`,
+          password: 'a-secure-password',
+          role: 'admin',
+          adminRegistrationKey: 'incorrect-key',
+        }),
+      });
+      assert.equal(response.status, 403);
+    }
+    const limited = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: 'Test Admin',
+        email: 'rate-limit-final@example.test',
+        password: 'a-secure-password',
+        role: 'admin',
+        adminRegistrationKey: 'incorrect-key',
+      }),
+    });
+    assert.equal(limited.status, 429);
+    assert.match((await limited.json()).error, /sign in first if a previous submission may have succeeded/i);
+  } finally {
+    User.exists = originalExists;
+  }
 });
 
 test('administrator setup clearly reports a missing server-side key', async () => {
   const originalKey = process.env.ADMIN_REGISTRATION_KEY;
+  const originalExists = User.exists;
+  User.exists = async () => null;
   delete process.env.ADMIN_REGISTRATION_KEY;
   try {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
@@ -200,10 +216,28 @@ test('administrator setup clearly reports a missing server-side key', async () =
       }),
     });
     assert.equal(response.status, 503);
-    assert.match((await response.json()).error, /ADMIN_REGISTRATION_KEY is missing/i);
+    const body = await response.json();
+    assert.equal(body.error, 'Administrator setup is unavailable.');
+    assert.equal(body.error.includes('ADMIN_REGISTRATION_KEY'), false);
   } finally {
+    User.exists = originalExists;
     if (originalKey === undefined) delete process.env.ADMIN_REGISTRATION_KEY;
     else process.env.ADMIN_REGISTRATION_KEY = originalKey;
+  }
+});
+
+test('configured administrator keys shorter than 32 characters prevent startup', async () => {
+  const originalKey = process.env.ADMIN_REGISTRATION_KEY;
+  const originalUri = process.env.MONGODB_URI;
+  process.env.ADMIN_REGISTRATION_KEY = 'short-key';
+  process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/unused';
+  try {
+    assert.throws(validateAdminRegistrationKey, /at least 32 characters/);
+    await assert.rejects(startServer(), /at least 32 characters/);
+  } finally {
+    process.env.ADMIN_REGISTRATION_KEY = originalKey;
+    if (originalUri === undefined) delete process.env.MONGODB_URI;
+    else process.env.MONGODB_URI = originalUri;
   }
 });
 
@@ -227,20 +261,26 @@ test('public registration rejects staff and patient account creation', async () 
 test('public registration never returns the configured admin key', async () => {
   const registrationKey = process.env.ADMIN_REGISTRATION_KEY;
   assert.ok(registrationKey);
-  const response = await fetch(`${baseUrl}/api/auth/register`, {
-    method: 'POST',
-    headers: registrationHeaders(),
-    body: JSON.stringify({
-      name: 'Test Admin',
-      email: 'admin@example.test',
-      password: 'a-secure-password',
-      role: 'admin',
-      adminRegistrationKey: 'incorrect-key',
-    }),
-  });
-  const body = await response.text();
-  assert.equal(response.status, 403);
-  assert.equal(body.includes(registrationKey), false);
+  const originalExists = User.exists;
+  User.exists = async () => null;
+  try {
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: registrationHeaders(),
+      body: JSON.stringify({
+        name: 'Test Admin',
+        email: 'admin@example.test',
+        password: 'a-secure-password',
+        role: 'admin',
+        adminRegistrationKey: 'incorrect-key',
+      }),
+    });
+    const body = await response.text();
+    assert.equal(response.status, 403);
+    assert.equal(body.includes(registrationKey), false);
+  } finally {
+    User.exists = originalExists;
+  }
 });
 
 test('new passwords over bcrypt’s 72-byte limit are rejected before account creation', async () => {

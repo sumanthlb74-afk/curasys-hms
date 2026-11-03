@@ -49,6 +49,13 @@ if (clinicStartHour >= clinicEndHour) {
   throw new Error('CLINIC_START_HOUR must be earlier than CLINIC_END_HOUR.');
 }
 
+export function validateAdminRegistrationKey() {
+  const key = process.env.ADMIN_REGISTRATION_KEY;
+  if (key && key.length < 32) {
+    throw new Error('ADMIN_REGISTRATION_KEY must be at least 32 characters when configured.');
+  }
+}
+
 const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -177,7 +184,7 @@ function asyncRoute(handler) {
 
 async function audit(request, {
   action, entityType, entityId = null, patientId = null, actorId = request.user?._id || null,
-  actorRole = request.user?.role || 'anonymous',
+  actorRole = request.user?.role || 'anonymous', note = '',
 }) {
   await AuditLog.create({
     actorId,
@@ -186,6 +193,7 @@ async function audit(request, {
     entityType,
     entityId,
     patientId,
+    note,
     ip: request.ip || '',
   });
 }
@@ -372,6 +380,16 @@ app.get('/api/health', asyncRoute(async (_request, response) => {
   response.json({ status: 'ok' });
 }));
 
+async function isAdministratorSetupOpen() {
+  const hasAdministrator = await User.exists({ role: 'admin' });
+  return Boolean(process.env.ADMIN_REGISTRATION_KEY?.trim())
+    && (!hasAdministrator || process.env.ADMIN_SETUP_ENABLED === 'true');
+}
+
+app.get('/api/auth/setup-status', asyncRoute(async (_request, response) => {
+  response.json({ setupOpen: await isAdministratorSetupOpen() });
+}));
+
 app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, response) => {
   const { name, email, password, role, phone, specialization, adminRegistrationKey } = request.body ?? {};
   if (
@@ -388,36 +406,46 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     response.status(403).json({ error: 'Only the project administrator can be registered through this one-time setup.' });
     return;
   }
+  const hasAdministrator = await User.exists({ role: 'admin' });
+  const bootstrap = !hasAdministrator;
+  if (!bootstrap && process.env.ADMIN_SETUP_ENABLED !== 'true') {
+    response.status(403).json({ error: 'Administrator setup is closed. Ask an existing administrator to create your account.' });
+    return;
+  }
   if (!process.env.ADMIN_REGISTRATION_KEY?.trim()) {
-    response.status(503).json({
-      error: 'Administrator setup is unavailable because ADMIN_REGISTRATION_KEY is missing from the API environment. Configure it on the Render API service and redeploy.',
-    });
+    response.status(503).json({ error: 'Administrator setup is unavailable.' });
     return;
   }
-  const expectedKey = Buffer.from(process.env.ADMIN_REGISTRATION_KEY, 'utf8');
-  const providedKey = Buffer.from(typeof adminRegistrationKey === 'string' ? adminRegistrationKey : '', 'utf8');
-  const validRegistrationKey = expectedKey.length > 0
-    && expectedKey.length === providedKey.length
-    && crypto.timingSafeEqual(expectedKey, providedKey);
+  const expectedKey = crypto.createHash('sha256').update(process.env.ADMIN_REGISTRATION_KEY, 'utf8').digest();
+  const providedKey = crypto.createHash('sha256')
+    .update(typeof adminRegistrationKey === 'string' ? adminRegistrationKey : '', 'utf8')
+    .digest();
+  const validRegistrationKey = crypto.timingSafeEqual(expectedKey, providedKey);
   if (!validRegistrationKey) {
-    response.status(403).json({ error: 'Admin registration requires the private ADMIN_REGISTRATION_KEY configured by the project owner.' });
+    response.status(403).json({ error: 'Administrator setup is unavailable.' });
     return;
   }
-  const isBootstrapAdmin = !(await User.exists({ role: 'admin' }));
   let user;
   try {
     user = await createUser({
       name, email, password, role, phone, specialization,
-      isBootstrapAdmin,
-      mustChangePassword: !isBootstrapAdmin,
+      isBootstrapAdmin: bootstrap,
+      mustChangePassword: false,
     });
   } catch (error) {
     if (error.code === 11000 && error.keyPattern?.isBootstrapAdmin) {
-      response.status(403).json({ error: 'Another administrator completed initial setup. Submit the registration form again to create an additional administrator.' });
+      response.status(403).json({ error: 'Administrator setup is closed. Ask an existing administrator to create your account.' });
       return;
     }
     throw error;
   }
+  await audit(request, {
+    action: 'admin.registered',
+    entityType: 'admin',
+    entityId: user._id,
+    actorRole: 'anonymous',
+    note: bootstrap ? 'bootstrap' : 'key-gated',
+  });
   response.status(201).json({ token: signToken(user), user: publicUser(user) });
 }));
 
@@ -478,6 +506,7 @@ app.post('/api/admins', authenticate, allow('admin'), asyncRoute(async (request,
     name, email, password, role: 'admin', phone,
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'admin.created', entityType: 'admin', entityId: administrator._id });
   response.status(201).json({ administrator: publicUser(administrator) });
 }));
 
@@ -528,6 +557,7 @@ app.post('/api/doctors', authenticate, allow('admin'), asyncRoute(async (request
     name, email, password, phone, specialization, role: 'doctor',
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'doctor.created', entityType: 'doctor', entityId: doctor._id });
   response.status(201).json({ doctor: publicUser(doctor) });
 }));
 
@@ -553,6 +583,7 @@ app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (requ
     response.status(404).json({ error: 'Doctor not found.' });
     return;
   }
+  await audit(request, { action: 'doctor.department_changed', entityType: 'doctor', entityId: doctor._id });
   response.json({ doctor: publicUser(doctor) });
 }));
 
@@ -659,6 +690,7 @@ app.post('/api/staff', authenticate, allow('admin'), asyncRoute(async (request, 
     name, email, password, role: 'staff', phone,
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'staff.created', entityType: 'staff', entityId: staff._id });
   response.status(201).json({ staff: publicUser(staff) });
 }));
 
@@ -1463,6 +1495,7 @@ app.use((error, _request, response, next) => {
 });
 
 export async function startServer() {
+  validateAdminRegistrationKey();
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required. Add your MongoDB Atlas connection string to server/.env.');
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('Set JWT_SECRET to a random secret of at least 32 characters in server/.env.');
   try {

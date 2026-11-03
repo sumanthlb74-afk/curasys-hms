@@ -382,10 +382,17 @@ function ChangePasswordPage({ user, onAuth, notify, required = false }) {
 
 function AuthPage({ onAuth, notify, patientOnly = false }) {
   const [mode, setMode] = useState('login');
+  const [setupOpen, setSetupOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showWakeMessage, setShowWakeMessage] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '' });
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  useEffect(() => {
+    if (patientOnly) return;
+    api.get('/auth/setup-status')
+      .then(({ data }) => setSetupOpen(data.setupOpen))
+      .catch(() => setSetupOpen(false));
+  }, [patientOnly]);
   useEffect(() => {
     if (!loading) return undefined;
     const timer = window.setTimeout(() => setShowWakeMessage(true), 4000);
@@ -426,7 +433,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
           <h1 className="text-2xl font-bold tracking-tight">{patientOnly ? 'Patient portal' : 'Curasys Medical Center'}</h1>
           <p className="mt-1 text-sm text-slate-500">{patientOnly ? 'Sign in with the email and temporary password provided by your care team.' : 'Hospital information system'}</p>
         </div>
-        {!patientOnly && <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+        {!patientOnly && setupOpen && <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
           {['login', 'register'].map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item === 'register' ? 'Administrator setup' : 'Sign in'}</button>)}
         </div>}
         <form onSubmit={submit} className="grid gap-4">
