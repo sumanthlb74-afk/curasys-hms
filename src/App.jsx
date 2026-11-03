@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, BedDouble, CalendarDays, Check, ClipboardList, LogOut, Moon, Plus, Receipt, ShieldCheck,
@@ -515,6 +516,10 @@ function PatientRegistrationForm({ notify, onCreated }) {
   const [form, setForm] = useState(emptyPatientForm);
   const [showPassword, setShowPassword] = useState(false);
   const [createdCredentials, setCreatedCredentials] = useState(null);
+  const copyCredentialsRef = useRef(null);
+  useEffect(() => {
+    if (createdCredentials) copyCredentialsRef.current?.focus();
+  }, [createdCredentials]);
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   const changeEmergencyContact = (key) => (event) => setForm((value) => ({
     ...value,
@@ -570,7 +575,29 @@ function PatientRegistrationForm({ notify, onCreated }) {
         </div>
         <button className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2"><Plus className="h-4 w-4" />Create patient chart & login</button>
       </form>
-      {createdCredentials && <div role="dialog" aria-modal="true" aria-labelledby="created-patient-title" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4"><section className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"><h2 id="created-patient-title" className="text-lg font-bold">Patient login created</h2><p className="mt-2 text-sm text-slate-500">Share these credentials securely. This temporary password is shown only once and must be changed at first sign-in.</p><p className="mt-4 text-sm"><strong>Email:</strong> {createdCredentials.email}</p><p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {createdCredentials.password}</p><p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {createdCredentials.uhid}</p><div className="mt-5 flex justify-end gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => { try { await navigator.clipboard.writeText(createdCredentials.password); notify('Temporary password copied.'); } catch { notify('Clipboard access is unavailable. Copy the password manually.', 'error'); } }}>Copy password</button><button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCreatedCredentials(null)}>Done</button></div></section></div>}
+      {createdCredentials && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="created-patient-title" className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/60 p-4">
+          <section className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+            <h2 id="created-patient-title" className="text-lg font-bold">Patient login created</h2>
+            <p className="mt-2 text-sm text-slate-500">Share these credentials securely. This temporary password is shown only once and must be changed at first sign-in.</p>
+            <p className="mt-4 break-all text-sm"><strong>Email:</strong> {createdCredentials.email}</p>
+            <p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {createdCredentials.password}</p>
+            <p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {createdCredentials.uhid}</p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button ref={copyCredentialsRef} type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(`Email: ${createdCredentials.email}\nPassword: ${createdCredentials.password}`);
+                  notify('Patient email and temporary password copied.');
+                } catch {
+                  notify('Clipboard access is unavailable. Copy the credentials manually.', 'error');
+                }
+              }}>Copy email + password</button>
+              <button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCreatedCredentials(null)}>Done</button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
     </Card>
   );
 }
@@ -1002,9 +1029,9 @@ function EditPatientDialog({ patient, notify, onClose, onSaved }) {
       notify(error.message, 'error');
     }
   };
-  return (
-    <div role="dialog" aria-modal="true" aria-labelledby="edit-patient-title" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4">
-      <section className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-labelledby="edit-patient-title" className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/60 p-4">
+      <section className="my-auto w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
         <h2 id="edit-patient-title" className="text-lg font-bold">Edit patient chart · {patient.uhid}</h2>
         <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Full name"><Input value={form.name} onChange={change('name')} maxLength="100" required /></Field>
@@ -1016,7 +1043,8 @@ function EditPatientDialog({ patient, notify, onClose, onSaved }) {
           <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">Cancel</button><button className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Save changes</button></div>
         </form>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
