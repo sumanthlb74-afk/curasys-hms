@@ -158,18 +158,48 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   const storedAdmin = await User.findById(admin.body.user.id).select('+password');
   assert.notEqual(storedAdmin.password, 'AdminPassword1!');
 
-  const repeatBootstrap = await api('/api/auth/register', {
-    method: 'POST',
-    body: {
-      name: 'Second Administrator',
-      email: 'admin-three@example.test',
-      password: 'AdminPassword3!',
-      role: 'admin',
-      adminRegistrationKey: process.env.ADMIN_REGISTRATION_KEY,
-    },
-    sourceIp: '198.51.100.10',
-  });
-  assert.equal(repeatBootstrap.status, 403);
+  for (const [name, email, password] of [
+    ['Second Administrator', 'admin-two@example.test', 'AdminPassword2!'],
+    ['Third Administrator', 'admin-three@example.test', 'AdminPassword3!'],
+  ]) {
+    const additionalAdministrator = await api('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name,
+        email,
+        password,
+        role: 'admin',
+        adminRegistrationKey: process.env.ADMIN_REGISTRATION_KEY,
+      },
+      sourceIp: '198.51.100.11',
+    });
+    assert.equal(additionalAdministrator.status, 201);
+    assert.equal(additionalAdministrator.body.user.mustChangePassword, true);
+    const additionalLogin = await login(email, password);
+    assert.equal(additionalLogin.status, 200);
+    assert.equal(additionalLogin.body.user.mustChangePassword, true);
+  }
+  assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 3);
+
+  for (const [name, email, password] of [
+    ['Second Administrator', 'admin-two@example.test', 'AdminPassword2!'],
+    ['Third Administrator', 'admin-three@example.test', 'AdminPassword3!'],
+  ]) {
+    const creation = await api('/api/admins', {
+      method: 'POST',
+      token: adminToken,
+      body: { name, email, password },
+    });
+    assert.equal(creation.status, 201);
+    assert.equal(creation.body.administrator.role, 'admin');
+    assert.equal(creation.body.administrator.mustChangePassword, true);
+    const administratorLogin = await login(email, password);
+    assert.equal(administratorLogin.status, 200);
+    assert.equal(administratorLogin.body.user.mustChangePassword, true);
+  }
+  assert.equal(await User.countDocuments({ role: 'admin', isActive: { $ne: false } }), 3);
+  assert.equal((await api('/api/admins', { token: adminToken })).body.administrators.length, 3);
+  assert.equal((await api('/api/admins')).status, 401);
 
   for (const role of ['doctor', 'staff', 'patient']) {
     const response = await api('/api/auth/register', {
@@ -220,6 +250,12 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   const doctorLogin = await login('doctor@example.test', 'DoctorPassword1!');
   assert.equal(doctorLogin.status, 200);
   assert.equal(doctorLogin.body.user.mustChangePassword, true);
+  assert.equal((await api('/api/admins', { token: doctorLogin.body.token })).status, 403);
+  assert.equal((await api('/api/admins', {
+    method: 'POST',
+    token: adminToken,
+    body: { name: 'Invalid Administrator', email: 'invalid-admin@example.test', password: 'short' },
+  })).status, 400);
   const doctorPasswordChange = await api('/api/auth/change-password', {
     method: 'POST',
     token: doctorLogin.body.token,
@@ -306,6 +342,11 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(patientLogin.body.user.role, 'patient');
   assert.equal(patientLogin.body.user.mustChangePassword, true);
   assert.equal(otherPatientLogin.status, 200);
+  assert.equal(otherPatientLogin.body.user.role, 'patient');
+  const adminPatientLogin = await login(' ADMIN-patient@example.test ', 'TemporaryPatient1!');
+  assert.equal(adminPatientLogin.status, 200);
+  assert.equal(adminPatientLogin.body.user.role, 'patient');
+  assert.equal((await login('admin-patient@example.test', 'WrongPassword1!')).status, 401);
   const otherPatientPasswordChange = await api('/api/auth/change-password', {
     method: 'POST',
     token: otherPatientLogin.body.token,

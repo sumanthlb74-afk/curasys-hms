@@ -403,19 +403,17 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     response.status(403).json({ error: 'Admin registration requires the private ADMIN_REGISTRATION_KEY configured by the project owner.' });
     return;
   }
-  if (await User.exists({ role: 'admin' })) {
-    response.status(403).json({ error: 'Administrator registration is closed. Ask an existing administrator to create staff accounts.' });
-    return;
-  }
-
+  const isBootstrapAdmin = !(await User.exists({ role: 'admin' }));
   let user;
   try {
     user = await createUser({
-      name, email, password, role, phone, specialization, isBootstrapAdmin: true,
+      name, email, password, role, phone, specialization,
+      isBootstrapAdmin,
+      mustChangePassword: !isBootstrapAdmin,
     });
   } catch (error) {
     if (error.code === 11000 && error.keyPattern?.isBootstrapAdmin) {
-      response.status(403).json({ error: 'Administrator registration is closed. An administrator has already completed setup.' });
+      response.status(403).json({ error: 'Another administrator completed initial setup. Submit the registration form again to create an additional administrator.' });
       return;
     }
     throw error;
@@ -456,6 +454,32 @@ app.post('/api/auth/login', authLimiter, asyncRoute(async (request, response) =>
 app.get('/api/auth/me', authenticate, (request, response) => {
   response.json({ user: publicUser(request.user) });
 });
+
+app.get('/api/admins', authenticate, allow('admin'), asyncRoute(async (_request, response) => {
+  const administrators = await User.find({ role: 'admin', isActive: { $ne: false } })
+    .select('name email')
+    .sort({ name: 1 })
+    .lean();
+  response.json({ administrators });
+}));
+
+app.post('/api/admins', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  const { name, email, password, phone } = request.body ?? {};
+  if (
+    typeof name !== 'string' || !name.trim() || name.trim().length > 100
+    || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    || !validPassword(password)
+    || !isOptionalPhone(phone)
+  ) {
+    response.status(400).json({ error: 'Enter a name, valid email, and password with at least 8 characters.' });
+    return;
+  }
+  const administrator = await createUser({
+    name, email, password, role: 'admin', phone,
+    registeredBy: request.user.id, mustChangePassword: true,
+  });
+  response.status(201).json({ administrator: publicUser(administrator) });
+}));
 
 app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, response) => {
   const { currentPassword, newPassword } = request.body ?? {};

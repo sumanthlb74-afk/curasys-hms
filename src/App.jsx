@@ -431,7 +431,7 @@ function AuthPage({ onAuth, notify }) {
           {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} maxLength={72} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
           {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
-          {isRegister && <p className="text-xs leading-relaxed text-slate-500">This one-time setup is only available before the first administrator account is created. Administrators create all doctor, staff, and patient accounts.</p>}
+          {isRegister && <p className="text-xs leading-relaxed text-slate-500">Administrator setup requires the private key from the project owner. The first administrator can set up the account directly; additional administrators must change their temporary password at first sign-in.</p>}
           {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">The server may be waking up. This can take up to a minute.</p>}
           <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : 'Sign in securely'}</button>
         </form>
@@ -961,6 +961,7 @@ function AdminDashboard({ notify }) {
     { key: 'beds', path: '/beds' },
     { key: 'billing', path: '/billing' },
     { key: 'appointments', path: '/appointments' },
+    { key: 'administrators', path: '/admins' },
     { key: 'staff', path: '/staff' },
     { key: 'doctors', path: '/doctors' },
     { key: 'audit', path: '/audit' },
@@ -971,6 +972,7 @@ function AdminDashboard({ notify }) {
   const totals = data.beds?.totals || [];
   const appointments = data.appointments?.appointments || [];
   const bills = data.billing?.bills || [];
+  const administrators = data.administrators?.administrators || [];
   const doctors = data.doctors?.doctors || [];
   const auditItems = data.audit?.items || [];
   const wardTotals = wards.map((ward) => totals.find((item) => item._id === ward) || {
@@ -980,10 +982,12 @@ function AdminDashboard({ notify }) {
     available: 0,
   });
   const staffMembers = data.staff?.staff || [];
+  const [adminForm, setAdminForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
   const [staffForm, setStaffForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
   const [doctorForm, setDoctorForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
   const [billForm, setBillForm] = useState(newBillForm);
+  const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [creatingStaff, setCreatingStaff] = useState(false);
   const [creatingDoctor, setCreatingDoctor] = useState(false);
   const [issuingBill, setIssuingBill] = useState(false);
@@ -995,6 +999,24 @@ function AdminDashboard({ notify }) {
   }, [loadData, setAssignment]);
 
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
+  const createAdminAccount = async (event) => {
+    event.preventDefault();
+    if (creatingAdmin) return;
+    if (adminForm.password !== adminForm.confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
+    setCreatingAdmin(true);
+    try {
+      const administratorData = { ...adminForm };
+      delete administratorData.confirmPassword;
+      const { data: result } = await api.post('/admins', administratorData);
+      notify(`Administrator account created for ${result.administrator.name}. They must change the temporary password at first sign-in.`);
+      setAdminForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
+      refresh();
+    } catch (error) { notify(error.message, 'error'); }
+    finally { setCreatingAdmin(false); }
+  };
   const createStaffAccount = async (event) => {
     event.preventDefault();
     if (creatingStaff) return;
@@ -1141,6 +1163,18 @@ function AdminDashboard({ notify }) {
       <div className="grid gap-6 lg:grid-cols-2">
         <PatientRegistrationForm notify={notify} onCreated={refresh} />
         <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
+        <Card title={`Administrators · ${administrators.length}`} icon={ShieldCheck}>
+          {administrators.length === 0 ? <Empty>No administrator accounts are registered.</Empty> : <div className="mb-4 space-y-2">{administrators.map((administrator) => <p key={administrator._id} className="rounded-xl bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800/60"><span className="font-semibold">{administrator.name}</span><span className="ml-2 text-slate-500">{administrator.email}</span></p>)}</div>}
+          <form onSubmit={createAdminAccount} className="grid gap-3 sm:grid-cols-2">
+            <Field label="Full name"><Input autoComplete="name" maxLength="100" value={adminForm.name} onChange={change(setAdminForm, 'name')} required /></Field>
+            <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={adminForm.email} onChange={change(setAdminForm, 'email')} required /></Field>
+            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={adminForm.password} onChange={change(setAdminForm, 'password')} required /></Field>
+            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={adminForm.confirmPassword} onChange={change(setAdminForm, 'confirmPassword')} required /></Field>
+            <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={adminForm.phone} onChange={change(setAdminForm, 'phone')} /></Field>
+            <p className="text-xs text-slate-500 sm:col-span-2">Only an administrator can create another administrator. New administrators must change their temporary password at first sign-in.</p>
+            <button disabled={creatingAdmin} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingAdmin ? 'Creating administrator…' : 'Create administrator'}</button>
+          </form>
+        </Card>
         <Card title="Create doctor account" icon={Stethoscope}>
           <form onSubmit={createDoctorAccount} className="grid gap-3 sm:grid-cols-2">
             <Field label="Full name"><Input autoComplete="name" maxLength="100" value={doctorForm.name} onChange={change(setDoctorForm, 'name')} required /></Field>

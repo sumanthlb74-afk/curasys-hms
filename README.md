@@ -30,7 +30,7 @@ npm.cmd run dev
 
 Open the Vite local URL printed by the command (normally `http://localhost:5173/`). Leave the terminal open while using the app. Stop both services with `Ctrl+C`.
 
-Create the first administrator using **Administrator setup** and the private key from `server/.env`. This setup closes after the first administrator is created. A unique database index protects concurrent bootstrap attempts. If the key is missing on the API, setup returns a clear configuration error; a wrong key is rejected without revealing the configured value. Administrators create doctor and medical staff accounts. Administrators, doctors, and medical staff can register patients. New staff, doctors, and patients must change their temporary password at first sign-in. Patients sign in with email and password; they do not choose an account type. No seeded demo login is available.
+Register administrators using **Administrator setup** and the private key from `server/.env`. The same key is required for every admin registration and is never exposed by the API. A unique database index protects concurrent initial-setup attempts. Additional administrators must change their temporary password at first sign-in; existing administrators can also provision admins from their dashboard. If the key is missing on the API, setup returns a clear configuration error; a wrong key is rejected without revealing the configured value. Administrators create doctor and medical staff accounts. Administrators, doctors, and medical staff can register patients. New staff, doctors, and patients must change their temporary password at first sign-in. Patients sign in with the email and temporary password entered by the staff member, doctor, or administrator who registered them; email matching is case-insensitive. They do not choose an account type. No seeded demo login is available.
 
 ## Build and deploy
 
@@ -75,7 +75,7 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 
 ## Features
 
-- JWT sign-in by email and password, with role-guarded patient, doctor, medical staff, and admin workspaces. Public setup can create only the first administrator; administrators provision doctors and staff.
+- JWT sign-in by email and password, with role-guarded patient, doctor, medical staff, and admin workspaces. Administrator setup requires the private registration key for each account; authenticated administrators can also create additional administrators, doctors, and staff.
 - Administrators, doctors, and medical staff can register patients. Patient intake includes contact and emergency-contact details, date of birth (age is calculated), blood group, address, allergies, ongoing conditions, current medicines, and optional baseline height and weight.
 - Patient temporary passwords are confirmed during entry, must be changed on first sign-in, and can be reset by authorized care-team members. Password changes invalidate existing sessions.
 - Doctor access is limited to patients they registered or patients assigned to them through an appointment. Patients can only read their own records.
