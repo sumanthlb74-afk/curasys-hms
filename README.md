@@ -50,7 +50,7 @@ The recovery action forces a password change at next sign-in and invalidates exi
 
 The Render Blueprint creates a static React frontend and a separate Express API. The frontend is configured to call the API origin, and the API allows the frontend origin through CORS.
 
-Before deploying the patient-only sequential UHID schema to an existing Atlas database, take a database backup, configure `MONGODB_URI` in `server/.env`, and run `npm.cmd run migrate:uhid`. The migration is idempotent, preserves existing patient UHIDs, clears UHIDs from non-patient accounts, and creates the partial unique index. Do not run it against a database you have not backed up.
+At API startup, an idempotent migration checks and repairs the UHID index, preserves existing patient UHIDs, clears UHIDs from non-patient accounts, and seeds the per-year counter without lowering it. It replaces a conflicting legacy non-partial index before accepting requests. The same migration is available as `npm.cmd run migrate:uhid`; back up Atlas before manually running migrations or changing production data.
 
 ### Free Render web service
 

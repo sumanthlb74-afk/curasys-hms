@@ -12,6 +12,7 @@ import Counter from './models/Counter.js';
 import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
+import { ensureUserIndexes } from './migrations/ensure-indexes.js';
 import { createOrResetAdmin } from './scripts/create-admin.js';
 
 const configuredTestUri = process.env.MONGODB_TEST_URI;
@@ -121,6 +122,41 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.ok(billingIndexes.some((index) => index.key.invoiceNumber === 1 && index.unique));
   assert.ok(auditIndexes.some((index) => index.key.at === -1));
   assert.ok(counterIndexes.some((index) => index.key.name === 1 && index.unique));
+
+  const usersCollection = mongoose.connection.collection('users');
+  await usersCollection.dropIndex('uhid_1');
+  await usersCollection.createIndex({ uhid: 1 }, { name: 'uhid_1', unique: true });
+  await User.create([
+    {
+      name: 'Existing indexed patient',
+      email: 'legacy-index-patient@example.test',
+      password: 'LegacyPassword1!',
+      role: 'patient',
+      uhid: 'CUR-2099-000007',
+    },
+    {
+      name: 'Legacy non-patient UHID',
+      email: 'legacy-index-doctor@example.test',
+      password: 'LegacyPassword1!',
+      role: 'doctor',
+      uhid: 'LEGACY-DOCTOR-ID',
+    },
+  ]);
+  const migratedIndexes = await ensureUserIndexes(mongoose.connection);
+  assert.equal(migratedIndexes.droppedLegacyIndex, true);
+  assert.equal(migratedIndexes.normalizedAccounts, 1);
+  assert.equal(migratedIndexes.seededCounters, 1);
+  assert.equal((await Counter.findOne({ name: 'uhid-2099' })).value, 7);
+  assert.equal((await User.findOne({ email: 'legacy-index-doctor@example.test' })).uhid, null);
+  const repeatedMigration = await ensureUserIndexes(mongoose.connection);
+  assert.equal(repeatedMigration.droppedLegacyIndex, false);
+  assert.equal(repeatedMigration.indexCreated, false);
+  await User.create([
+    { name: 'Index doctor one', email: 'index-doctor-one@example.test', password: 'IndexPassword1!', role: 'doctor' },
+    { name: 'Index doctor two', email: 'index-doctor-two@example.test', password: 'IndexPassword2!', role: 'doctor' },
+  ]);
+  assert.equal(await User.countDocuments({ email: /^index-doctor-/ }), 2);
+  await usersCollection.deleteOne({ email: 'legacy-index-patient@example.test' });
 
   const unauthenticated = await api('/api/patients');
   assert.equal(unauthenticated.status, 401);

@@ -20,6 +20,7 @@ import Counter from './models/Counter.js';
 import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
+import { ensureUserIndexes } from './migrations/ensure-indexes.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from './validation.js';
 import {
   bloodGroups,
@@ -1503,15 +1504,24 @@ export async function startServer() {
   } catch {
     throw new Error('HOSPITAL_TZ must be a valid IANA time zone.');
   }
+  mongoose.set('autoIndex', false);
+  const indexModels = [Appointment, Bed, Billing, ClinicalNote, Counter, Prescription, Vital, AuditLog];
+  for (const model of indexModels) {
+    model.on('index', (error) => {
+      if (error) console.error(`Could not build indexes for ${model.modelName}:`, error.message);
+    });
+  }
   await mongoose.connect(process.env.MONGODB_URI);
-  await User.collection.createIndex(
-    { isBootstrapAdmin: 1 },
-    {
-      name: 'unique_bootstrap_admin',
-      unique: true,
-      partialFilterExpression: { isBootstrapAdmin: true },
-    },
-  );
+  const indexResult = await ensureUserIndexes(mongoose.connection);
+  console.log('Ensured patient UHID index:', indexResult);
+  await User.createIndexes();
+  await Promise.all(indexModels.map(async (model) => {
+    try {
+      await model.createIndexes();
+    } catch (error) {
+      console.error(`Could not build indexes for ${model.modelName}:`, error.message);
+    }
+  }));
   const port = Number(process.env.PORT || process.env.API_PORT || 3001);
   return app.listen(port, '0.0.0.0', () => {
     console.log(`Curasys API listening on port ${port} (MongoDB connected)`);
