@@ -124,6 +124,11 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.ok(counterIndexes.some((index) => index.key.name === 1 && index.unique));
 
   const usersCollection = mongoose.connection.collection('users');
+  await usersCollection.drop();
+  const initializedEmptyCollection = await ensureUserIndexes(mongoose.connection);
+  assert.equal(initializedEmptyCollection.createdUsersCollection, true);
+  assert.ok((await usersCollection.indexes()).some((index) => index.name === 'uhid_1' && index.unique));
+  await User.createIndexes();
   await usersCollection.dropIndex('uhid_1');
   await usersCollection.createIndex({ uhid: 1 }, { name: 'uhid_1', unique: true });
   await User.create([

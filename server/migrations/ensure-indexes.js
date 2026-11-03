@@ -25,6 +25,17 @@ export async function ensureUserIndexes(connection) {
     throw new Error('A connected MongoDB connection is required to ensure user indexes.');
   }
 
+  let createdUsersCollection = false;
+  const usersCollectionExists = await connection.db.listCollections({ name: 'users' }, { nameOnly: true }).hasNext();
+  if (!usersCollectionExists) {
+    try {
+      await connection.db.createCollection('users');
+      createdUsersCollection = true;
+    } catch (error) {
+      if (error.code !== 48 && error.codeName !== 'NamespaceExists') throw error;
+    }
+  }
+
   const users = connection.collection('users');
   const counters = connection.collection('counters');
   const initialIndexes = await users.indexes();
@@ -87,6 +98,7 @@ export async function ensureUserIndexes(connection) {
   }
 
   return {
+    createdUsersCollection,
     droppedLegacyIndex,
     normalizedAccounts: normalizedAccounts.modifiedCount,
     seededCounters: existingSequenceByYear.length,
