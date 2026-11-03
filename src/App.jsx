@@ -874,9 +874,11 @@ function StaffDashboard({ notify }) {
   const updateBed = async (bed, status, patientId) => {
     try {
       const nextStatus = status ?? (patientId ? 'Occupied' : 'Available');
+      if (bed.patientId && ['Available', 'Maintenance'].includes(nextStatus)
+        && !window.confirm(`Discharge ${bed.patientId.name} from bed ${bed.bedNumber}?`)) return;
       await api.put(`/beds/${bed._id}`, {
         status: nextStatus,
-        patientId: patientId ?? (nextStatus === 'Occupied' ? bed.patientId?._id : null),
+        patientId: nextStatus === 'Occupied' ? patientId ?? bed.patientId?._id : null,
       });
       notify('Bed assignment updated.');
       setAssignment((value) => {
@@ -1114,7 +1116,12 @@ function AdminDashboard({ notify }) {
   const updateBed = async (bed, status, patientId) => {
     try {
       const nextStatus = status ?? (patientId ? 'Occupied' : 'Available');
-      await api.put(`/beds/${bed._id}`, { status: nextStatus, patientId: patientId ?? (nextStatus === 'Occupied' ? bed.patientId?._id : null) });
+      if (bed.patientId && ['Available', 'Maintenance'].includes(nextStatus)
+        && !window.confirm(`Discharge ${bed.patientId.name} from bed ${bed.bedNumber}?`)) return;
+      await api.put(`/beds/${bed._id}`, {
+        status: nextStatus,
+        patientId: nextStatus === 'Occupied' ? patientId ?? bed.patientId?._id : null,
+      });
       notify('Bed assignment updated.');
       setAssignment((value) => {
         const next = { ...value };

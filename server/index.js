@@ -1002,7 +1002,10 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
     }
     update.status = status;
   }
-  if (patientId !== undefined) {
+  const isDischarge = status === 'Available' || status === 'Maintenance';
+  if (isDischarge) {
+    update.patientId = null;
+  } else if (patientId !== undefined) {
     if (patientId && (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } }))) {
       response.status(400).json({ error: 'Choose a valid patient.' });
       return;
@@ -1050,10 +1053,20 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
     response.status(409).json({ error: 'This patient is already assigned to another occupied bed.' });
     return;
   }
-  if (update.status === 'Available' || update.status === 'Maintenance') update.patientId = null;
-  const bed = await Bed.findByIdAndUpdate(request.params.id, update, { returnDocument: 'after', runValidators: true })
+  const bedFilter = { _id: request.params.id };
+  if (update.status === 'Occupied' && assignedPatient) {
+    bedFilter.$or = [
+      { status: { $ne: 'Occupied' } },
+      { patientId: assignedPatient },
+    ];
+  }
+  const bed = await Bed.findOneAndUpdate(bedFilter, update, { returnDocument: 'after', runValidators: true })
     .populate('patientId', 'name uhid');
   if (!bed) {
+    if (await Bed.exists({ _id: request.params.id })) {
+      response.status(409).json({ error: 'Discharge the current patient first.' });
+      return;
+    }
     response.status(404).json({ error: 'Bed not found.' });
     return;
   }

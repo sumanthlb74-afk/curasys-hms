@@ -700,11 +700,24 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   });
   assert.equal(bedAssignment.status, 200);
   assert.equal(bedAssignment.body.bed.status, 'Occupied');
+  const resavedBedAssignment = await api(`/api/beds/${bedCreate.body.bed._id}`, {
+    method: 'PUT',
+    token: staffToken,
+    body: { status: 'Occupied', patientId: doctorPatient.body.patient.id },
+  });
+  assert.equal(resavedBedAssignment.status, 200);
   const secondBed = await api('/api/beds', {
     method: 'POST',
     token: staffToken,
     body: { bedNumber: 'A-102', ward: 'General Ward' },
   });
+  const displacementAttempt = await api(`/api/beds/${bedCreate.body.bed._id}`, {
+    method: 'PUT',
+    token: staffToken,
+    body: { patientId: staffPatient.body.patient.id },
+  });
+  assert.equal(displacementAttempt.status, 409);
+  assert.equal(displacementAttempt.body.error, 'Discharge the current patient first.');
   const duplicateBedAssignment = await api(`/api/beds/${secondBed.body.bed._id}`, {
     method: 'PUT',
     token: staffToken,
@@ -714,10 +727,25 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   const discharged = await api(`/api/beds/${bedCreate.body.bed._id}`, {
     method: 'PUT',
     token: staffToken,
-    body: { status: 'Available' },
+    body: { status: 'Available', patientId: doctorPatient.body.patient.id },
   });
   assert.equal(discharged.status, 200);
+  assert.equal(discharged.body.bed.status, 'Available');
   assert.equal(discharged.body.bed.patientId, null);
+  const secondBedAssignment = await api(`/api/beds/${secondBed.body.bed._id}`, {
+    method: 'PUT',
+    token: staffToken,
+    body: { patientId: staffPatient.body.patient.id },
+  });
+  assert.equal(secondBedAssignment.status, 200);
+  const maintenanceDischarge = await api(`/api/beds/${secondBed.body.bed._id}`, {
+    method: 'PUT',
+    token: staffToken,
+    body: { status: 'Maintenance', patientId: staffPatient.body.patient.id },
+  });
+  assert.equal(maintenanceDischarge.status, 200);
+  assert.equal(maintenanceDischarge.body.bed.status, 'Maintenance');
+  assert.equal(maintenanceDischarge.body.bed.patientId, null);
 
   const billOne = await api('/api/billing', {
     method: 'POST',
