@@ -89,7 +89,7 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 
 ## Features
 
-- JWT sign-in by email and password, with role-guarded patient, doctor, medical staff, and admin workspaces. Administrator setup requires the private registration key for each account; authenticated administrators can also create additional administrators, doctors, and staff.
+- JWT sign-in by email and password, with role-guarded patient, doctor, medical staff, and admin workspaces. Public administrator setup requires the private registration key and is open only during first-admin bootstrap or when `ADMIN_SETUP_ENABLED=true`; authenticated administrators can create additional administrators, doctors, and staff.
 - Administrators, doctors, and medical staff can register patients. Patient intake includes contact and emergency-contact details, date of birth (age is calculated), blood group, address, allergies, ongoing conditions, current medicines, and optional baseline height and weight.
 - Patient temporary passwords are confirmed during entry, must be changed on first sign-in, and can be reset by authorized care-team members. Password changes invalidate existing sessions.
 - Doctor access is limited to patients they registered or patients assigned to them through an appointment. Patients can only read their own records.
