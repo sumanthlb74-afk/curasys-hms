@@ -76,6 +76,7 @@ app.use(express.json({ limit: '64kb' }));
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
+  skipSuccessfulRequests: true,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   keyGenerator: (request) => `${ipKeyGenerator(request.ip)}:${String(request.body?.email || '').trim().toLowerCase()}`,
@@ -90,12 +91,11 @@ const registrationLimiter = rateLimit({
 });
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 300,
+  limit: 1000,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: { error: 'Too many requests. Try again in 15 minutes.' },
 });
-app.use('/api', apiLimiter);
 
 function publicUser(user) {
   return {
@@ -380,6 +380,8 @@ app.get('/api/health', asyncRoute(async (_request, response) => {
   }
   response.json({ status: 'ok' });
 }));
+
+app.use('/api', apiLimiter);
 
 async function isAdministratorSetupOpen() {
   const hasAdministrator = await User.exists({ role: 'admin' });

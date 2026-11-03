@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import process from 'node:process';
 import test, { after, before } from 'node:test';
+import AuditLog from './models/AuditLog.js';
 import User from './models/User.js';
 import { isWithinClinicHours } from '../shared/clinic-hours.js';
 
@@ -40,6 +41,7 @@ test('health endpoint reports an unavailable database with a failing status', as
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { status: 'degraded' });
   assert.equal(response.headers.get('x-powered-by'), null);
+  assert.equal(response.headers.get('ratelimit-policy'), null);
 });
 
 test('malformed JSON receives a client error instead of a server error', async () => {
@@ -310,4 +312,46 @@ test('login limits repeated attempts for the same email and IP', async () => {
   const limitedResponse = await request();
   assert.equal(limitedResponse.status, 429);
   assert.match((await limitedResponse.json()).error, /too many authentication attempts/i);
+});
+
+test('login limiter skips successful responses but limits repeated failures', async () => {
+  const originalFindOne = User.findOne;
+  const originalAuditCreate = AuditLog.create;
+  const originalJwtSecret = process.env.JWT_SECRET;
+  const clientIp = '203.0.113.77';
+  const fakeAdmin = {
+    id: '507f1f77bcf86cd799439011',
+    _id: '507f1f77bcf86cd799439011',
+    role: 'admin',
+    sessionVersion: 0,
+    verifyPassword: async () => true,
+  };
+  User.findOne = (query) => ({
+    select: async () => query.email === 'successful@example.test' ? fakeAdmin : null,
+  });
+  AuditLog.create = async () => ({});
+  process.env.JWT_SECRET = 'test-jwt-secret-for-rate-limit-tests';
+
+  const request = (email) => fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': clientIp,
+    },
+    body: JSON.stringify({ email, password: 'CorrectPassword1!' }),
+  });
+  try {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      assert.equal((await request('successful@example.test')).status, 200);
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      assert.equal((await request('failed@example.test')).status, 401);
+    }
+    assert.equal((await request('failed@example.test')).status, 429);
+  } finally {
+    User.findOne = originalFindOne;
+    AuditLog.create = originalAuditCreate;
+    if (originalJwtSecret === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = originalJwtSecret;
+  }
 });

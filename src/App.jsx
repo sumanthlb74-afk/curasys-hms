@@ -462,30 +462,53 @@ function useLoad(notify, requests) {
   const [revision, setRevision] = useState(0);
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadFailure, setLoadFailure] = useState(null);
+  const hasLoaded = useRef(false);
   const refresh = useCallback(() => {
-    setLoading(true);
-    setError(null);
     setRevision((value) => value + 1);
   }, []);
   const requestSignature = JSON.stringify(requests);
   useEffect(() => {
     let active = true;
     const requestList = JSON.parse(requestSignature);
+    if (hasLoaded.current) setRefreshing(true);
+    else setLoading(true);
     Promise.all(requestList.map((request) => api.get(request.path)))
       .then((responses) => {
-        if (active) setData(Object.fromEntries(responses.map((response, index) => [requestList[index].key, response.data])));
+        if (active) {
+          setData(Object.fromEntries(responses.map((response, index) => [requestList[index].key, response.data])));
+          hasLoaded.current = true;
+        }
       })
       .catch((loadError) => {
         if (active) {
-          setError(loadError.message);
+          setLoadFailure({ message: loadError.message, requestSignature, revision });
           notify(loadError.message, 'error');
         }
       })
-      .finally(() => { if (active) setLoading(false); });
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      });
     return () => { active = false; };
   }, [revision, notify, requestSignature]);
-  return { data, loading, error, refresh };
+  const error = loadFailure?.requestSignature === requestSignature
+    && loadFailure?.revision === revision
+    ? loadFailure.message
+    : null;
+  return { data, loading, refreshing, error, refresh };
+}
+
+function useDebouncedValue(value, delay = 400) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debouncedValue;
 }
 
 function PatientRegistrationForm({ notify, onCreated }) {
@@ -644,16 +667,29 @@ function PatientDashboard({ user, notify }) {
 function DoctorDashboard({ user, notify }) {
   const [patientSearch, setPatientSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
-  const { data, loading, error, refresh } = useLoad(notify, [
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
-    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'prescriptions', path: '/prescriptions' },
     { key: 'vitals', path: '/vitals' },
     { key: 'clinicalNotes', path: '/clinical-notes' },
   ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const refreshing = fixedLoad.refreshing || patientLoad.refreshing;
+  const error = fixedLoad.error || patientLoad.error;
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
+  const refresh = useCallback(() => {
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
   const appointments = data.appointments?.appointments || [];
   const allPatients = data.patients?.patients || [];
-  const patients = filterPatientList(allPatients, patientSearch);
+  const patients = filterPatientList(allPatients, debouncedPatientSearch);
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
@@ -751,6 +787,7 @@ function DoctorDashboard({ user, notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Doctor workspace" title={`Welcome, ${user.name}`} description={`${user.specialization || 'Clinical team'} · live appointments and patient records`} icon={Stethoscope} />
+      {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
@@ -827,15 +864,24 @@ function DoctorDashboard({ user, notify }) {
 function StaffDashboard({ notify }) {
   const [patientSearch, setPatientSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
-  const { data, loading, error, refresh: loadData } = useLoad(notify, [
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
-    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'doctors', path: '/doctors' },
     { key: 'beds', path: '/beds' },
   ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const refreshing = fixedLoad.refreshing || patientLoad.refreshing;
+  const error = fixedLoad.error || patientLoad.error;
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
   const appointments = data.appointments?.appointments || [];
   const allPatients = data.patients?.patients || [];
-  const patients = filterPatientList(allPatients, patientSearch);
+  const patients = filterPatientList(allPatients, debouncedPatientSearch);
   const doctors = data.doctors?.doctors || [];
   const beds = data.beds?.beds || [];
   const [appointmentForm, setAppointmentForm] = useState({
@@ -844,8 +890,9 @@ function StaffDashboard({ notify }) {
   const [assignment, setAssignment] = useState({});
   const refresh = useCallback(() => {
     setAssignment({});
-    loadData();
-  }, [loadData, setAssignment]);
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
   const bookAppointment = async (event) => {
     event.preventDefault();
@@ -893,6 +940,7 @@ function StaffDashboard({ notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Medical staff workspace" title="Patient care coordination" description="Register patients, coordinate appointments, and manage bed assignments." icon={Stethoscope} />
+      {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
@@ -975,8 +1023,8 @@ function EditPatientDialog({ patient, notify, onClose, onSaved }) {
 function AdminDashboard({ notify }) {
   const [patientSearch, setPatientSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
-  const { data, loading, error, refresh: loadData } = useLoad(notify, [
-    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
     { key: 'beds', path: '/beds' },
     { key: 'billing', path: '/billing' },
     { key: 'appointments', path: '/appointments' },
@@ -985,8 +1033,17 @@ function AdminDashboard({ notify }) {
     { key: 'doctors', path: '/doctors' },
     { key: 'audit', path: '/audit' },
   ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const refreshing = fixedLoad.refreshing || patientLoad.refreshing;
+  const error = fixedLoad.error || patientLoad.error;
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
   const allPatients = data.patients?.patients || [];
-  const patients = filterPatientList(allPatients, patientSearch);
+  const patients = filterPatientList(allPatients, debouncedPatientSearch);
   const beds = data.beds?.beds || [];
   const totals = data.beds?.totals || [];
   const appointments = data.appointments?.appointments || [];
@@ -1012,6 +1069,10 @@ function AdminDashboard({ notify }) {
   const [issuingBill, setIssuingBill] = useState(false);
   const [assignment, setAssignment] = useState({});
   const [editingPatient, setEditingPatient] = useState(null);
+  const loadData = useCallback(() => {
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
   const refresh = useCallback(() => {
     setAssignment({});
     loadData();
@@ -1173,6 +1234,7 @@ function AdminDashboard({ notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Administration" title="Hospital command center" description="Register patients and manage beds using live MongoDB records." icon={ShieldCheck} />
+      {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <LoadState loading={loading} error={error} onRetry={refresh} />
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory and pickers" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
