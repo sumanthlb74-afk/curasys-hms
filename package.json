@@ -13,7 +13,9 @@
     "build": "vite build",
     "lint": "eslint .",
     "test": "node --test",
+    "test:e2e": "playwright test",
     "migrate:uhid": "node server/migrations/uhid-counter-index.js",
+    "seed:demo": "node server/scripts/seed-demo.js",
     "create-admin": "node server/scripts/create-admin.js",
     "preview": "vite preview"
   },
@@ -36,6 +38,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

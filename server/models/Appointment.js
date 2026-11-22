@@ -24,6 +24,7 @@ const appointmentSchema = new mongoose.Schema({
 appointmentSchema.index(
   { doctorId: 1, date: 1, time: 1 },
   {
+    name: 'appointment_doctor_slot_active_unique_v2',
     unique: true,
     partialFilterExpression: { status: { $in: appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status)) }, doctorId: { $type: 'objectId' } },
   },
