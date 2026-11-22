@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
+import { userRoles } from '../../shared/constants.js';
 
 const auditLogSchema = new mongoose.Schema({
   actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
-  actorRole: { type: String, enum: ['patient', 'doctor', 'staff', 'admin', 'anonymous'], required: true },
+  actorRole: { type: String, enum: [...userRoles, 'anonymous'], required: true },
   action: { type: String, required: true, trim: true, maxlength: 80 },
   entityType: { type: String, required: true, trim: true, maxlength: 80 },
   entityId: { type: mongoose.Schema.Types.ObjectId, default: null },

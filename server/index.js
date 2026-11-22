@@ -697,6 +697,33 @@ app.post('/api/staff', authenticate, allow('admin'), asyncRoute(async (request, 
   response.status(201).json({ staff: publicUser(staff) });
 }));
 
+app.get('/api/receptionists', authenticate, allow('admin'), asyncRoute(async (_request, response) => {
+  const receptionists = await User.find({ role: 'receptionist', isActive: { $ne: false } })
+    .select('name email phone')
+    .sort({ name: 1 })
+    .lean();
+  response.json({ receptionists });
+}));
+
+app.post('/api/receptionists', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  const { name, email, password, phone } = request.body ?? {};
+  if (
+    typeof name !== 'string' || !name.trim() || name.trim().length > 100
+    || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    || !validPassword(password)
+    || !isOptionalPhone(phone)
+  ) {
+    response.status(400).json({ error: 'Enter a name, valid email, and password with at least 8 characters.' });
+    return;
+  }
+  const receptionist = await createUser({
+    name, email, password, role: 'receptionist', phone,
+    registeredBy: request.user.id, mustChangePassword: true,
+  });
+  await audit(request, { action: 'receptionist.created', entityType: 'receptionist', entityId: receptionist._id });
+  response.status(201).json({ receptionist: publicUser(receptionist) });
+}));
+
 app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid patient ID.' });

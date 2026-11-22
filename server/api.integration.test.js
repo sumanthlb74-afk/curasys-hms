@@ -305,7 +305,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(resetAdministrator.user.sessionVersion, recoveredVersion + 1);
   assert.equal((await login(recoveryEmail, 'RecoveryPassword2!')).status, 200);
 
-  for (const role of ['doctor', 'staff', 'patient']) {
+  for (const role of ['doctor', 'staff', 'receptionist', 'patient']) {
     const response = await api('/api/auth/register', {
       method: 'POST',
       body: {
@@ -412,6 +412,36 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   });
   assert.equal(staffPasswordChange.status, 200);
   const staffToken = staffPasswordChange.body.token;
+  const receptionistCreation = await api('/api/receptionists', {
+    method: 'POST',
+    token: adminToken,
+    body: {
+      name: 'Clinic Receptionist',
+      email: 'receptionist@example.test',
+      password: 'ReceptionPassword1!',
+    },
+  });
+  assert.equal(receptionistCreation.status, 201);
+  assert.equal(receptionistCreation.body.receptionist.role, 'receptionist');
+  assert.equal(receptionistCreation.body.receptionist.mustChangePassword, true);
+  assert.equal(await AuditLog.countDocuments({
+    action: 'receptionist.created',
+    entityId: receptionistCreation.body.receptionist.id,
+    actorRole: 'admin',
+  }), 1);
+  const receptionistLogin = await login('receptionist@example.test', 'ReceptionPassword1!');
+  assert.equal(receptionistLogin.status, 200);
+  assert.equal(receptionistLogin.body.user.mustChangePassword, true);
+  const receptionistPasswordChange = await api('/api/auth/change-password', {
+    method: 'POST',
+    token: receptionistLogin.body.token,
+    body: { currentPassword: 'ReceptionPassword1!', newPassword: 'ReceptionPassword2!' },
+  });
+  assert.equal(receptionistPasswordChange.status, 200);
+  const receptionistToken = receptionistPasswordChange.body.token;
+  assert.equal((await api('/api/receptionists', { token: receptionistToken })).status, 403);
+  assert.equal((await api('/api/clinical-notes', { token: receptionistToken })).status, 403);
+  assert.equal((await api('/api/vitals', { token: receptionistToken })).status, 403);
   assert.equal((await api('/api/doctors', {
     method: 'POST',
     token: staffToken,
@@ -431,18 +461,33 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
       password: 'StaffPassword1!',
     },
   })).status, 403);
+  assert.equal((await api('/api/prescriptions', {
+    method: 'POST',
+    token: staffToken,
+    body: {
+      patientId: admin.body.user.id,
+      diagnosis: 'Should be denied',
+      medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Daily', duration: '1 day' }],
+    },
+  })).status, 403);
+  assert.equal((await api('/api/clinical-notes', {
+    method: 'POST',
+    token: staffToken,
+    body: { patientId: admin.body.user.id },
+  })).status, 403);
 
   const doctorPatient = await registerPatient(doctorToken, 'Doctor Patient', 'doctor-patient@example.test');
   const staffPatient = await registerPatient(staffToken, 'Staff Patient', 'staff-patient@example.test');
   const adminPatient = await registerPatient(adminToken, 'Admin Patient', 'admin-patient@example.test');
-  for (const result of [doctorPatient, staffPatient, adminPatient]) {
+  const receptionistPatient = await registerPatient(receptionistToken, 'Reception Patient', 'reception-patient@example.test');
+  for (const result of [doctorPatient, staffPatient, adminPatient, receptionistPatient]) {
     assert.equal(result.status, 201);
     assert.equal(result.body.patient.mustChangePassword, true);
     assert.ok(result.body.patient.registeredBy === undefined);
   }
-  assert.equal(await User.countDocuments({ role: 'patient' }), 3);
-  assert.equal(new Set([doctorPatient.body.patient.uhid, staffPatient.body.patient.uhid, adminPatient.body.patient.uhid]).size, 3);
-  assert.equal(await User.countDocuments({ role: 'patient', registeredBy: { $exists: true, $ne: null } }), 3);
+  assert.equal(await User.countDocuments({ role: 'patient' }), 4);
+  assert.equal(new Set([doctorPatient.body.patient.uhid, staffPatient.body.patient.uhid, adminPatient.body.patient.uhid, receptionistPatient.body.patient.uhid]).size, 4);
+  assert.equal(await User.countDocuments({ role: 'patient', registeredBy: { $exists: true, $ne: null } }), 4);
   await assert.rejects(User.create({
     name: 'Duplicate UHID Patient',
     email: 'duplicate-uhid@example.test',

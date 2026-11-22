@@ -621,6 +621,141 @@ function PatientRegistrationForm({ notify, onCreated }) {
   );
 }
 
+function AdminAccountForm({ notify, onCreated }) {
+  const [form, setForm] = useState({ ...emptyPatientForm(), role: 'doctor', specialization: departments[0] });
+  const [showPassword, setShowPassword] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [credentials, setCredentials] = useState(null);
+  const copyRef = useRef(null);
+  const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  const changeEmergencyContact = (key) => (event) => setForm((value) => ({
+    ...value,
+    emergencyContact: { ...value.emergencyContact, [key]: event.target.value },
+  }));
+  useEffect(() => {
+    if (credentials) copyRef.current?.focus();
+  }, [credentials]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (form.password !== form.confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
+    if (creating) return;
+    setCreating(true);
+    try {
+      const routes = {
+        admin: ['/admins', 'administrator'],
+        doctor: ['/doctors', 'doctor'],
+        staff: ['/staff', 'staff'],
+        receptionist: ['/receptionists', 'receptionist'],
+        patient: ['/patients', 'patient'],
+      };
+      const [path, responseKey] = routes[form.role];
+      const payload = { ...form };
+      delete payload.confirmPassword;
+      if (form.role === 'patient') {
+        payload.allergies = parseList(form.allergies);
+        payload.chronicConditions = parseList(form.chronicConditions);
+        payload.currentMedications = parseList(form.currentMedications);
+      } else {
+        for (const field of [
+          'dateOfBirth', 'sex', 'bloodGroup', 'address', 'emergencyContact',
+          'allergies', 'chronicConditions', 'currentMedications', 'heightCm', 'weightKg',
+        ]) delete payload[field];
+      }
+      if (form.role !== 'doctor') delete payload.specialization;
+      const { data } = await api.post(path, payload);
+      const created = data[responseKey];
+      setCredentials({ email: created.email, password: form.password, uhid: created.uhid });
+      notify(`${form.role === 'patient' ? 'Patient' : form.role === 'staff' ? 'Medical staff' : form.role[0].toUpperCase() + form.role.slice(1)} account created; password change is required at first sign-in.`);
+      setForm({ ...emptyPatientForm(), role: form.role, specialization: departments[0] });
+      setShowPassword(false);
+      onCreated();
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <Card title="Create account" icon={Users}>
+      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Role">
+          <Select value={form.role} onChange={change('role')}>
+            <option value="doctor">Doctor</option>
+            <option value="staff">Medical Staff (nurse)</option>
+            <option value="receptionist">Receptionist</option>
+            <option value="patient">Patient</option>
+            <option value="admin">Administrator</option>
+          </Select>
+        </Field>
+        <Field label="Full name"><Input autoComplete="name" maxLength="100" value={form.name} onChange={change('name')} required /></Field>
+        <Field label="Email / login ID"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
+        <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
+        <Field label="Temporary password">
+          <span className="flex gap-2">
+            <Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required />
+            <button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
+          </span>
+          <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500">
+            <span>Must be changed at first sign-in.</span>
+            <button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => {
+              const password = generateTemporaryPassword();
+              setForm((value) => ({ ...value, password, confirmPassword: password }));
+              setShowPassword(true);
+            }}>Generate strong password</button>
+          </span>
+        </Field>
+        <Field label="Confirm temporary password"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
+        {form.role === 'doctor' && <Field label="Department"><Select value={form.specialization} onChange={change('specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>}
+        {form.role === 'patient' && <>
+          <Field label="Date of birth"><Input type="date" max={localDateValue()} value={form.dateOfBirth} onChange={change('dateOfBirth')} required />{calculateAge(form.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(form.dateOfBirth)} years</span>}</Field>
+          <Field label="Sex"><Select value={form.sex} onChange={change('sex')}><option value="">Not specified</option>{['Female', 'Male', 'Intersex', 'Prefer not to say'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
+          <Field label="Blood group"><Select value={form.bloodGroup} onChange={change('bloodGroup')}><option value="">Not known</option>{bloodGroups.map((value) => <option key={value}>{value}</option>)}</Select></Field>
+          <Field label="Home address"><Textarea rows="2" maxLength="500" value={form.address} onChange={change('address')} /></Field>
+          <Field label="Emergency contact name"><Input maxLength="100" value={form.emergencyContact.name} onChange={changeEmergencyContact('name')} /></Field>
+          <Field label="Emergency contact relationship"><Input maxLength="50" value={form.emergencyContact.relationship} onChange={changeEmergencyContact('relationship')} /></Field>
+          <Field label="Emergency contact phone"><Input type="tel" maxLength="30" value={form.emergencyContact.phone} onChange={changeEmergencyContact('phone')} /></Field>
+          <Field label="Known allergies"><Input value={form.allergies} onChange={change('allergies')} placeholder="Separate entries with commas" /></Field>
+          <Field label="Ongoing conditions"><Input value={form.chronicConditions} onChange={change('chronicConditions')} placeholder="Separate entries with commas" /></Field>
+          <Field label="Current medications"><Input value={form.currentMedications} onChange={change('currentMedications')} placeholder="Separate entries with commas" /></Field>
+          <Field label="Height (cm)"><Input type="number" min="30" max="250" step="0.1" value={form.heightCm} onChange={change('heightCm')} /></Field>
+          <Field label="Weight (kg)"><Input type="number" min="1" max="500" step="0.1" value={form.weightKg} onChange={change('weightKg')} /></Field>
+        </>}
+        <button disabled={creating} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:col-span-2">{creating ? 'Creating account…' : 'Create account'}</button>
+      </form>
+      {credentials && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="created-account-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
+          <div className="grid min-h-full place-items-center">
+            <section className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6 dark:bg-slate-900">
+              <h2 id="created-account-title" className="text-lg font-bold">Account created</h2>
+              <p className="mt-2 text-sm text-slate-500">Credentials are shown once. Share them securely; the temporary password must be changed at first sign-in.</p>
+              <p className="mt-4 break-all text-sm"><strong>Login ID:</strong> {credentials.email}</p>
+              <p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {credentials.password}</p>
+              {credentials.uhid && <p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {credentials.uhid}</p>}
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button ref={copyRef} type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(`Login ID: ${credentials.email}\nTemporary password: ${credentials.password}`);
+                    notify('Login ID and temporary password copied.');
+                  } catch {
+                    notify('Clipboard access is unavailable. Copy the credentials manually.', 'error');
+                  }
+                }}>Copy login ID + password</button>
+                <button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCredentials(null)}>Done</button>
+              </div>
+            </section>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </Card>
+  );
+}
+
 function PatientPasswordReset({ patients, notify, onReset }) {
   const [patientId, setPatientId] = useState('');
   const [password, setPassword] = useState('');
@@ -1069,6 +1204,7 @@ function EditPatientDialog({ patient, notify, onClose, onSaved }) {
 
 function AdminDashboard({ notify }) {
   const [patientSearch, setPatientSearch] = useState('');
+  const [accountSearch, setAccountSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
   const debouncedPatientSearch = useDebouncedValue(patientSearch);
   const fixedLoad = useLoad(notify, [
@@ -1077,8 +1213,10 @@ function AdminDashboard({ notify }) {
     { key: 'appointments', path: '/appointments' },
     { key: 'administrators', path: '/admins' },
     { key: 'staff', path: '/staff' },
+    { key: 'receptionists', path: '/receptionists' },
     { key: 'doctors', path: '/doctors' },
     { key: 'audit', path: '/audit' },
+    { key: 'vitals', path: '/vitals' },
   ]);
   const patientLoad = useLoad(notify, [
     { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
@@ -1105,15 +1243,14 @@ function AdminDashboard({ notify }) {
     available: 0,
   });
   const staffMembers = data.staff?.staff || [];
-  const [adminForm, setAdminForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-  const [staffForm, setStaffForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-  const [doctorForm, setDoctorForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
+  const receptionists = data.receptionists?.receptionists || [];
+  const matchesAccountSearch = (account) => [account.name, account.email, account.phone]
+    .some((value) => value?.toLowerCase().includes(accountSearch.trim().toLowerCase()));
+  const visibleDoctors = doctors.filter(matchesAccountSearch);
+  const visibleStaff = staffMembers.filter(matchesAccountSearch);
+  const visibleReceptionists = receptionists.filter(matchesAccountSearch);
+  const visiblePatients = patients.filter(matchesAccountSearch);
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
-  const [billForm, setBillForm] = useState(newBillForm);
-  const [creatingAdmin, setCreatingAdmin] = useState(false);
-  const [creatingStaff, setCreatingStaff] = useState(false);
-  const [creatingDoctor, setCreatingDoctor] = useState(false);
-  const [issuingBill, setIssuingBill] = useState(false);
   const [assignment, setAssignment] = useState({});
   const [editingPatient, setEditingPatient] = useState(null);
   const loadData = useCallback(() => {
@@ -1126,60 +1263,6 @@ function AdminDashboard({ notify }) {
   }, [loadData, setAssignment]);
 
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
-  const createAdminAccount = async (event) => {
-    event.preventDefault();
-    if (creatingAdmin) return;
-    if (adminForm.password !== adminForm.confirmPassword) {
-      notify('The temporary passwords do not match.', 'error');
-      return;
-    }
-    setCreatingAdmin(true);
-    try {
-      const administratorData = { ...adminForm };
-      delete administratorData.confirmPassword;
-      const { data: result } = await api.post('/admins', administratorData);
-      notify(`Administrator account created for ${result.administrator.name}. They must change the temporary password at first sign-in.`);
-      setAdminForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setCreatingAdmin(false); }
-  };
-  const createStaffAccount = async (event) => {
-    event.preventDefault();
-    if (creatingStaff) return;
-    if (staffForm.password !== staffForm.confirmPassword) {
-      notify('The temporary passwords do not match.', 'error');
-      return;
-    }
-    setCreatingStaff(true);
-    try {
-      const staffData = { ...staffForm };
-      delete staffData.confirmPassword;
-      const { data: result } = await api.post('/staff', staffData);
-      notify(`Medical staff account created for ${result.staff.name}.`);
-      setStaffForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setCreatingStaff(false); }
-  };
-  const createDoctorAccount = async (event) => {
-    event.preventDefault();
-    if (creatingDoctor) return;
-    if (doctorForm.password !== doctorForm.confirmPassword) {
-      notify('The temporary passwords do not match.', 'error');
-      return;
-    }
-    setCreatingDoctor(true);
-    try {
-      const doctorData = { ...doctorForm };
-      delete doctorData.confirmPassword;
-      const { data: result } = await api.post('/doctors', doctorData);
-      notify(`Doctor account created for ${result.doctor.name}. They must change the temporary password at first sign-in.`);
-      setDoctorForm({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setCreatingDoctor(false); }
-  };
   const updateDoctorDepartment = async (doctorId, specialization) => {
     try {
       await api.put(`/doctors/${doctorId}`, { specialization });
@@ -1198,21 +1281,6 @@ function AdminDashboard({ notify }) {
       setBedForm({ bedNumber: '', ward: wards[0] });
       refresh();
     } catch (error) { notify(error.message, 'error'); }
-  };
-  const issueBill = async (event) => {
-    event.preventDefault();
-    if (issuingBill) return;
-    setIssuingBill(true);
-    try {
-      await api.post('/billing', {
-        ...billForm,
-        totalAmount: Number(billForm.totalAmount),
-      });
-      notify('Bill issued and added to the patient portal.');
-      setBillForm(newBillForm());
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setIssuingBill(false); }
   };
   const updateBillStatus = async (bill, status) => {
     try {
@@ -1284,54 +1352,25 @@ function AdminDashboard({ notify }) {
       {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <LoadState loading={loading} error={error} onRetry={refresh} />
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory and pickers" /></Field>
+      <Field label="Search doctors, medical staff, receptionists, and patients"><Input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="Search account lists by name, email, or phone" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <div className="grid gap-3 sm:grid-cols-3">
         <Card title="Registered patients" icon={Users}><p className="text-3xl font-bold">{patients.length}</p><p className="mt-1 text-xs text-slate-500">Active patient charts</p></Card>
         <Card title="Appointments" icon={CalendarDays}><p className="text-3xl font-bold">{appointments.length}</p><p className="mt-1 text-xs text-slate-500">Scheduled and historical visits</p></Card>
-        <Card title="Care team" icon={Stethoscope}><p className="text-3xl font-bold">{staffMembers.length + (data.doctors?.doctors?.length || 0)}</p><p className="mt-1 text-xs text-slate-500">{staffMembers.length} medical staff · {data.doctors?.doctors?.length || 0} doctors</p></Card>
+        <Card title="Care team" icon={Stethoscope}><p className="text-3xl font-bold">{staffMembers.length + (data.doctors?.doctors?.length || 0) + receptionists.length}</p><p className="mt-1 text-xs text-slate-500">{staffMembers.length} medical staff · {data.doctors?.doctors?.length || 0} doctors · {receptionists.length} receptionists</p></Card>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {wardTotals.map((item) => <Card key={item._id} title={item._id} icon={BedDouble}><div className="flex items-end justify-between"><p className="text-3xl font-bold">{item.occupied}<span className="text-base font-medium text-slate-400"> / {item.total}</span></p><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">{item.available} available</span></div></Card>)}
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
-        <PatientRegistrationForm notify={notify} onCreated={refresh} />
+        <AdminAccountForm notify={notify} onCreated={refresh} />
         <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
+        <PreliminaryCheckForm patients={patients} notify={notify} onSaved={refresh} />
         <Card title={`Administrators · ${administrators.length}`} icon={ShieldCheck}>
           {administrators.length === 0 ? <Empty>No administrator accounts are registered.</Empty> : <div className="mb-4 space-y-2">{administrators.map((administrator) => <p key={administrator._id} className="rounded-xl bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800/60"><span className="font-semibold">{administrator.name}</span><span className="ml-2 text-slate-500">{administrator.email}</span></p>)}</div>}
-          <form onSubmit={createAdminAccount} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Full name"><Input autoComplete="name" maxLength="100" value={adminForm.name} onChange={change(setAdminForm, 'name')} required /></Field>
-            <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={adminForm.email} onChange={change(setAdminForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={adminForm.password} onChange={change(setAdminForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={adminForm.confirmPassword} onChange={change(setAdminForm, 'confirmPassword')} required /></Field>
-            <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={adminForm.phone} onChange={change(setAdminForm, 'phone')} /></Field>
-            <p className="text-xs text-slate-500 sm:col-span-2">Only an administrator can create another administrator. New administrators must change their temporary password at first sign-in.</p>
-            <button disabled={creatingAdmin} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingAdmin ? 'Creating administrator…' : 'Create administrator'}</button>
-          </form>
-        </Card>
-        <Card title="Create doctor account" icon={Stethoscope}>
-          <form onSubmit={createDoctorAccount} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Full name"><Input autoComplete="name" maxLength="100" value={doctorForm.name} onChange={change(setDoctorForm, 'name')} required /></Field>
-            <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={doctorForm.email} onChange={change(setDoctorForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={doctorForm.password} onChange={change(setDoctorForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={doctorForm.confirmPassword} onChange={change(setDoctorForm, 'confirmPassword')} required /></Field>
-            <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={doctorForm.phone} onChange={change(setDoctorForm, 'phone')} /></Field>
-            <Field label="Department"><Select value={doctorForm.specialization} onChange={change(setDoctorForm, 'specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
-            <p className="text-xs text-slate-500 sm:col-span-2">Doctors change this temporary password on first sign-in. Only an administrator can create doctor accounts.</p>
-            <button disabled={creatingDoctor} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingDoctor ? 'Creating doctor login…' : 'Create doctor login'}</button>
-          </form>
-        </Card>
-        <Card title="Create medical staff account" icon={Stethoscope}>
-          <form onSubmit={createStaffAccount} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Full name"><Input value={staffForm.name} onChange={change(setStaffForm, 'name')} required /></Field>
-            <Field label="Email"><Input type="email" value={staffForm.email} onChange={change(setStaffForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" value={staffForm.password} onChange={change(setStaffForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" autoComplete="new-password" value={staffForm.confirmPassword} onChange={change(setStaffForm, 'confirmPassword')} required /></Field>
-            <Field label="Phone"><Input value={staffForm.phone} onChange={change(setStaffForm, 'phone')} /></Field>
-            <button disabled={creatingStaff} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingStaff ? 'Creating staff login…' : 'Create staff login'}</button>
-          </form>
         </Card>
         <Card title="Doctor departments" icon={Stethoscope}>
-          {doctors.length === 0 ? <Empty>No doctor accounts are registered.</Empty> : <div className="space-y-3">{doctors.map((doctor) => <Field key={doctor._id} label={doctor.name}><Select value={doctor.specialization} onChange={(event) => updateDoctorDepartment(doctor._id, event.target.value)}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>)}</div>}
+          {visibleDoctors.length === 0 ? <Empty>No doctor accounts match this search.</Empty> : <div className="space-y-3">{visibleDoctors.map((doctor) => <Field key={doctor._id} label={`${doctor.name} · ${doctor.email}`}><Select value={doctor.specialization} onChange={(event) => updateDoctorDepartment(doctor._id, event.target.value)}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>)}</div>}
         </Card>
         <Card title="Add a hospital bed" icon={BedDouble}>
           <form onSubmit={createBed} className="grid gap-3 sm:grid-cols-2">
@@ -1344,25 +1383,20 @@ function AdminDashboard({ notify }) {
       <Card title="Bed management" icon={BedDouble}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : beds.length === 0 ? <Empty>No beds are registered yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Bed</th><th scope="col" className="pb-3">Ward</th><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select aria-label={`Patient assigned to bed ${bed.bedNumber}`} value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select aria-label={`Status of bed ${bed.bedNumber}`} value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><div className="flex items-center gap-2"><button type="button" onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button><button type="button" onClick={() => deleteBed(bed._id)} className="text-xs text-rose-600 hover:underline">Remove</button></div></td></tr>)}</tbody></table></div>}
       </Card>
+      <Card title={`All bills · ${bills.length}`} icon={Receipt}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{bills.map((bill) => <article key={bill._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold">{bill.patientId?.name} · {bill.patientId?.uhid}</p><p className="font-bold text-teal-700 dark:text-teal-300">{formatCurrency(bill.totalPaise)}</p></div><p className="mt-1">{bill.invoiceNumber} · {bill.status}{bill.paymentMethod && ` · ${bill.paymentMethod}`}</p><p className="mt-1 text-xs text-slate-500">{bill.lineItems?.length ? bill.lineItems.map((item) => `${item.description}: ${formatCurrency(item.amountPaise)}`).join(' · ') : bill.description}</p>{bill.status === 'Unpaid' && <button type="button" onClick={() => updateBillStatus(bill, 'Void')} className="mt-2 text-xs font-semibold text-rose-700 underline dark:text-rose-300">Void bill (admin)</button>}</article>)}</div>}
+      </Card>
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Issue a patient bill" icon={Receipt}>
-          <form onSubmit={issueBill} className="grid gap-3">
-            <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
-            <Field label="Total amount (INR)"><Input type="number" min="0.01" max="100000000" step="0.01" required value={billForm.totalAmount} onChange={change(setBillForm, 'totalAmount')} /></Field>
-            <Field label="Bill description"><Textarea rows="2" maxLength="1000" required value={billForm.description} onChange={change(setBillForm, 'description')} /></Field>
-            <button disabled={issuingBill} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-wait disabled:opacity-60"><Receipt className="h-4 w-4" />{issuingBill ? 'Issuing bill…' : 'Issue bill'}</button>
-            <p className="text-xs text-slate-500">The standard consultation fee is ₹500 and can be changed before issuing. This default is only a form value; no bill is saved until you issue it. Patients can view issued bills in their read-only portal. After inactivity, the free API may need time to wake up. If a timeout occurs, refresh the dashboard and check the bills list before retrying.</p>
-          </form>
+        <Card title={`Doctors · ${visibleDoctors.length}`} icon={Stethoscope}>
+          {visibleDoctors.length === 0 ? <Empty>No doctors match this search.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{visibleDoctors.map((doctor) => <div key={doctor._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{doctor.name}</p><p className="text-xs text-slate-500">{doctor.email} · {doctor.specialization}</p></div>)}</div>}
         </Card>
-        <Card title={`Issued bills · ${bills.length}`} icon={Receipt}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{bills.map((bill) => <article key={bill._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold">{bill.patientId?.name} · {bill.patientId?.uhid}</p><p className="font-bold text-teal-700 dark:text-teal-300">{formatCurrency(bill.totalPaise)}</p></div><p className="mt-1">{bill.description}</p><p className="mt-1 text-xs text-slate-500">{bill.invoiceNumber || 'Legacy invoice'} · {bill.status || 'Unpaid'} · Issued {new Date(bill.createdAt).toLocaleString()}</p>{bill.status === 'Unpaid' && <div className="mt-2 flex gap-3 text-xs"><button type="button" onClick={() => updateBillStatus(bill, 'Paid')} className="font-semibold text-teal-700 underline dark:text-teal-300">Mark paid</button><button type="button" onClick={() => updateBillStatus(bill, 'Void')} className="font-semibold text-rose-700 underline dark:text-rose-300">Void bill</button></div>}</article>)}</div>}
+        <Card title={`Medical staff · ${visibleStaff.length}`} icon={Stethoscope}>
+          {visibleStaff.length === 0 ? <Empty>No medical staff match this search.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{visibleStaff.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.phone || 'No phone'}</span></div>)}</div>}
         </Card>
-      </div>
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title={`Medical staff · ${staffMembers.length}`} icon={Stethoscope}>
-          {staffMembers.length === 0 ? <Empty>No staff accounts have been created.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{staffMembers.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.phone || 'No phone'}</span></div>)}</div>}
+        <Card title={`Receptionists · ${visibleReceptionists.length}`} icon={Users}>
+          {visibleReceptionists.length === 0 ? <Empty>No receptionists match this search.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{visibleReceptionists.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.phone || 'No phone'}</span></div>)}</div>}
         </Card>
-        <Card title={`Patient directory · ${data.patients?.total ?? patients.length}`} icon={Users}>{loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : patients.length === 0 ? <Empty>No patients match this search.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{patients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><div className="flex gap-3"><button onClick={() => setEditingPatient(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button onClick={() => resetPatientPassword(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Reset password</button><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Deactivate</button></div></div>)}</div>}</Card>
+        <Card title={`Patient directory · ${data.patients?.total ?? patients.length}`} icon={Users}>{loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : visiblePatients.length === 0 ? <Empty>No patients match this search.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{visiblePatients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><div className="flex gap-3"><button onClick={() => setEditingPatient(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button onClick={() => resetPatientPassword(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Reset password</button><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Deactivate</button></div></div>)}</div>}</Card>
         <Card title={`Appointment overview · ${appointments.length}`} icon={CalendarDays}>{appointments.length === 0 ? <Empty>No appointments are booked.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{appointments.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.department} · {item.status}</p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p></div>)}</div>}</Card>
       </div>
       <Card title="Audit log" icon={ShieldCheck}>

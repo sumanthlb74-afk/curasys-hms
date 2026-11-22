@@ -22,6 +22,8 @@ test('shared contact validators reject wrong types and oversized values', () => 
 
 test('shared metadata is used by the Mongoose model enums', () => {
   assert.deepEqual(User.schema.path('bloodGroup').enumValues, ['', ...bloodGroups]);
+  assert.deepEqual(User.schema.path('role').enumValues, userRoles);
+  assert.deepEqual(AuditLog.schema.path('actorRole').enumValues, [...userRoles, 'anonymous']);
   assert.deepEqual(Appointment.schema.path('triage').enumValues, triageLevels);
   assert.deepEqual(Bed.schema.path('ward').enumValues, wards);
   assert.ok(departments.includes('Cardiology'));
@@ -60,6 +62,16 @@ test('user schema accepts the medical staff role', async () => {
     email: 'staff@example.test',
     password: 'a-secure-password',
     role: 'staff',
+  }));
+  assert.equal(error, null);
+});
+
+test('user schema accepts receptionist accounts', async () => {
+  const error = await getValidationError(new User({
+    name: 'Clinic Receptionist',
+    email: 'receptionist@example.test',
+    password: 'a-secure-password',
+    role: 'receptionist',
   }));
   assert.equal(error, null);
 });

@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import { bloodGroups } from '../../shared/constants.js';
+import { bloodGroups, userRoles } from '../../shared/constants.js';
 
 const emergencyContactSchema = new mongoose.Schema({
   name: { type: String, trim: true, default: '', maxlength: 100 },
@@ -20,7 +20,7 @@ const userSchema = new mongoose.Schema({
     match: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
   },
   password: { type: String, required: true, minlength: 8, select: false },
-  role: { type: String, enum: ['patient', 'doctor', 'staff', 'admin'], required: true },
+  role: { type: String, enum: userRoles, required: true },
   isBootstrapAdmin: { type: Boolean, default: false },
   uhid: { type: String, default: null, required() { return this.role === 'patient'; } },
   registeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
