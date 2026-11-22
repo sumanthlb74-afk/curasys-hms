@@ -1419,7 +1419,7 @@ app.get('/api/vitals', authenticate, allow('patient', 'doctor', 'admin'), asyncR
   await addPatientSearch(filter, pagination.q);
   const result = await listPage(Vital, filter, pagination, {
     sort: { createdAt: -1 },
-    populate: [['patientId', 'name uhid'], ['recordedBy', 'name role']],
+    populate: [['patientId', 'name uhid'], ['recordedBy', 'name role'], ['enteredBy', 'name role'], ['editedBy', 'name']],
   });
   response.json({ vitals: result.items, ...result });
 }));
@@ -1482,21 +1482,73 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
     response.status(400).json({ error: 'Invalid vital record ID.' });
     return;
   }
-  const fields = ['heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose', 'oxygenSaturation', 'heightCm', 'weightKg', 'notes'];
+  const vital = await Vital.findById(request.params.id);
+  if (!vital) {
+    response.status(404).json({ error: 'Vital record not found.' });
+    return;
+  }
+  if (!await doctorCanAccessPatient(request.user.id, vital.patientId)) {
+    response.status(404).json({ error: 'Vital record not found.' });
+    return;
+  }
+  const fields = [
+    'heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose',
+    'oxygenSaturation', 'heightCm', 'weightKg', 'notes', 'symptoms', 'symptomOther',
+  ];
   const update = Object.fromEntries(fields.filter((field) => request.body?.[field] !== undefined).map((field) => [field, request.body[field]]));
   if (!Object.keys(update).length) {
     response.status(400).json({ error: 'Provide at least one vital value to update.' });
     return;
   }
-  const vital = await Vital.findOneAndUpdate(
-    { _id: request.params.id, recordedBy: request.user.id },
-    update,
-    { returnDocument: 'after', runValidators: true },
-  );
-  if (!vital) {
-    response.status(404).json({ error: 'Vital record not found.' });
+  if (
+    (update.symptoms !== undefined && (
+      !Array.isArray(update.symptoms)
+      || update.symptoms.some((symptom) => !preliminaryCheckSymptoms.includes(symptom))
+      || new Set(update.symptoms).size !== update.symptoms.length
+    ))
+    || (update.symptomOther !== undefined && (typeof update.symptomOther !== 'string' || update.symptomOther.length > 200))
+    || (update.notes !== undefined && (typeof update.notes !== 'string' || update.notes.length > 1000))
+  ) {
+    response.status(400).json({ error: 'Provide only allowed symptoms and text within the field limits.' });
     return;
   }
+  const measurementRanges = {
+    heartRate: [20, 300],
+    systolic: [40, 300],
+    diastolic: [20, 200],
+    respiratoryRate: [1, 100],
+    temperatureC: [25, 45],
+    bloodGlucose: [1, 2000],
+    oxygenSaturation: [1, 100],
+    heightCm: [30, 250],
+    weightKg: [1, 500],
+  };
+  const hasInvalidMeasurement = Object.entries(measurementRanges).some(([field, [min, max]]) => {
+    const value = update[field];
+    return value !== undefined && value !== null && value !== ''
+      && (!Number.isFinite(Number(value)) || Number(value) < min || Number(value) > max);
+  });
+  const nextSymptoms = update.symptoms ?? vital.symptoms;
+  const nextSymptomOther = update.symptomOther ?? vital.symptomOther;
+  const nextSystolic = update.systolic !== undefined ? update.systolic : vital.systolic;
+  const nextDiastolic = update.diastolic !== undefined ? update.diastolic : vital.diastolic;
+  const hasSystolic = nextSystolic !== undefined && nextSystolic !== null && nextSystolic !== '';
+  const hasDiastolic = nextDiastolic !== undefined && nextDiastolic !== null && nextDiastolic !== '';
+  if (
+    hasInvalidMeasurement
+    || (hasSystolic !== hasDiastolic)
+    || (nextSymptoms?.includes('Other') && (typeof nextSymptomOther !== 'string' || !nextSymptomOther.trim() || nextSymptomOther.length > 200))
+  ) {
+    response.status(400).json({ error: 'Keep measurements within their allowed ranges and provide details for Other symptoms.' });
+    return;
+  }
+  if (!nextSymptoms?.includes('Other')) update.symptomOther = '';
+  Object.assign(vital, update);
+  if (request.user.role === 'doctor') {
+    vital.editedBy = request.user.id;
+    vital.editedAt = new Date();
+  }
+  await vital.save();
   await audit(request, {
     action: 'vital.updated',
     entityType: 'vital',
