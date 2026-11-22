@@ -32,6 +32,7 @@ import {
   paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
+  prescriptionTimings,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -1466,7 +1467,7 @@ app.delete('/api/clinical-notes/:id', authenticate, allow('doctor'), asyncRoute(
 }));
 
 app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
-  const { patientId, diagnosis, medicines, instructions, followUp, advice } = request.body ?? {};
+  const { patientId, appointmentId, diagnosis, medicines, instructions, followUp, advice } = request.body ?? {};
   if (
     !validObjectId(patientId)
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
@@ -1475,6 +1476,7 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
     || !Array.isArray(medicines) || medicines.length < 1 || medicines.length > 30
     || medicines.some((medicine) => !medicine || typeof medicine !== 'object'
       || !['name', 'dosage', 'frequency', 'duration'].every((field) => typeof medicine[field] === 'string' && medicine[field].trim())
+      || (medicine.timing !== undefined && !prescriptionTimings.includes(medicine.timing))
       || ['route', 'instructions'].some((field) => medicine[field] !== undefined && (typeof medicine[field] !== 'string' || medicine[field].length > (field === 'route' ? 50 : 500))))
     || (instructions !== undefined && (typeof instructions !== 'string' || instructions.length > 2000))
     || (followUp !== undefined && (typeof followUp !== 'string' || followUp.length > 500))
@@ -1482,6 +1484,20 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
   ) {
     response.status(400).json({ error: 'Select a patient and provide a diagnosis and at least one complete medicine.' });
     return;
+  }
+  let appointment = null;
+  if (appointmentId !== undefined) {
+    appointment = validObjectId(appointmentId)
+      ? await Appointment.findOne({ _id: appointmentId, patientId, doctorId: request.user.id })
+      : null;
+    if (!appointment) {
+      response.status(400).json({ error: 'Choose one of your appointments for this patient.' });
+      return;
+    }
+    if (!(appointmentStatusTransitions[appointment.status] || []).includes('Consulted')) {
+      response.status(409).json({ error: `This appointment is ${appointment.status} and is not ready for consultation.` });
+      return;
+    }
   }
   const prescription = await Prescription.create({
     patientId,
@@ -1492,6 +1508,10 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
     followUp,
     advice,
   });
+  if (appointment) {
+    appointment.status = 'Consulted';
+    await appointment.save();
+  }
   await audit(request, { action: 'prescription.created', entityType: 'prescription', entityId: prescription._id, patientId });
   response.status(201).json({ prescription });
 }));
@@ -1508,6 +1528,7 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(asyn
   if (Array.isArray(medicines) && medicines.length > 0 && medicines.length <= 30
     && medicines.every((medicine) => medicine && typeof medicine === 'object'
       && ['name', 'dosage', 'frequency', 'duration'].every((field) => typeof medicine[field] === 'string' && medicine[field].trim())
+      && (medicine.timing === undefined || prescriptionTimings.includes(medicine.timing))
       && ['route', 'instructions'].every((field) => medicine[field] === undefined || (typeof medicine[field] === 'string' && medicine[field].length <= (field === 'route' ? 50 : 500))))) {
     update.medicines = medicines;
   }

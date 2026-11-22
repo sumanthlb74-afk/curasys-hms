@@ -16,6 +16,7 @@ import {
   paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
+  prescriptionTimings,
   triageLevels,
   userRoles,
   wards,
@@ -229,6 +230,24 @@ test('prescription advice is defaulted and constrained to the shared suggestions
     advice: { suggestions: ['Unlisted advice'] },
   }));
   assert.ok(invalid.errors['advice.suggestions.0']);
+});
+
+test('prescription medicine timing is constrained to the shared timing list', async () => {
+  const valid = new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Timing test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Once daily', duration: '5 days', timing: 'Before food' }],
+  });
+  assert.equal(await getValidationError(valid), null);
+  assert.ok(prescriptionTimings.includes(valid.medicines[0].timing));
+  const invalid = await getValidationError(new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Timing test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Once daily', duration: '5 days', timing: 'With dinner' }],
+  }));
+  assert.ok(invalid.errors['medicines.0.timing']);
 });
 
 test('billing requires a patient, administrator, positive whole-paise amount, and description', async () => {

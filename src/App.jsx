@@ -17,6 +17,9 @@ import {
   paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
+  prescriptionDurations,
+  prescriptionFrequencies,
+  prescriptionTimings,
   signInRoles,
   triageLevels,
   wards,
@@ -846,13 +849,13 @@ function DoctorDashboard({ user, notify }) {
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
-  const emptyPrescription = { patientId: '', diagnosis: '', instructions: '', followUp: '', advice: { suggestions: [], notes: '' }, medicines: [{ name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] };
+  const emptyPrescription = { patientId: '', appointmentId: '', diagnosis: '', instructions: '', followUp: '', advice: { suggestions: [], notes: '' }, medicines: [{ name: '', dosage: '', frequency: '', duration: '', customDuration: '', timing: '', route: '', instructions: '' }] };
   const emptyClinicalNote = { patientId: '', chiefComplaint: '', historyOfPresentIllness: '', examination: '', assessment: '', plan: '', followUp: '' };
   const [prescription, setPrescription] = useState(emptyPrescription);
   const [clinicalNote, setClinicalNote] = useState(emptyClinicalNote);
   const [editingRecord, setEditingRecord] = useState(null);
   const selectedPatientChecks = vitals.filter((record) => String(record.patientId?._id || record.patientId) === prescription.patientId);
-  const [filter, setFilter] = useState('Scheduled');
+  const [filter, setFilter] = useState('All');
   const [profilePatientId, setProfilePatientId] = useState('');
   const profilePatient = patients.find((item) => item._id === profilePatientId);
   const patientChart = [
@@ -869,7 +872,8 @@ function DoctorDashboard({ user, notify }) {
       await api.post('/prescriptions', {
         patientId: prescription.patientId,
         diagnosis: prescription.diagnosis,
-        medicines: prescription.medicines,
+        medicines: prescription.medicines.map((medicine) => ({ ...medicine, duration: medicine.duration === 'Custom' ? medicine.customDuration : medicine.duration })),
+        appointmentId: prescription.appointmentId || undefined,
         instructions: prescription.instructions,
         followUp: prescription.followUp,
         advice: prescription.advice,
@@ -931,18 +935,20 @@ function DoctorDashboard({ user, notify }) {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Write prescription" icon={ClipboardList}>
           <form onSubmit={savePrescription} className="grid gap-3 sm:grid-cols-2">
+            <Field label="Open appointment"><Select required value={prescription.appointmentId} onChange={(event) => { const selected = appointments.find((appointment) => appointment._id === event.target.value); setPrescription((value) => ({ ...value, appointmentId: event.target.value, patientId: selected?.patientId?._id || value.patientId })); }}><option value="">Select an appointment</option>{appointments.map((appointment) => <option key={appointment._id} value={appointment._id}>{appointment.patientId?.name} · {appointment.department} · {formatAppointmentDate(appointment.date)} {formatAppointmentSlot(appointment.time)} · {appointment.status}</option>)}</Select></Field>
             <Field label="Patient"><Select required value={prescription.patientId} onChange={change(setPrescription, 'patientId')}><option value="">Select a patient</option>{patients.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.uhid}</option>)}</Select></Field>
             <Field label="Diagnosis"><Input required value={prescription.diagnosis} onChange={change(setPrescription, 'diagnosis')} /></Field>
             {prescription.medicines.map((medicine, index) => <div key={index} className="grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2 sm:grid-cols-2">
               <Field label="Medicine"><Input required maxLength="100" value={medicine.name} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item) }))} /></Field>
               <Field label="Dosage"><Input required maxLength="100" value={medicine.dosage} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, dosage: event.target.value } : item) }))} placeholder="e.g. 10 mg" /></Field>
-              <Field label="Frequency"><Input required maxLength="100" value={medicine.frequency} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, frequency: event.target.value } : item) }))} placeholder="e.g. Twice daily" /></Field>
-              <Field label="Duration"><Input required maxLength="100" value={medicine.duration} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, duration: event.target.value } : item) }))} placeholder="e.g. 7 days" /></Field>
+              <Field label="Frequency"><Select required value={medicine.frequency} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, frequency: event.target.value } : item) }))}><option value="">Select frequency</option>{prescriptionFrequencies.map((frequency) => <option key={frequency}>{frequency}</option>)}</Select></Field>
+              <Field label="Duration"><Select required value={medicine.duration} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, duration: event.target.value } : item) }))}><option value="">Select duration</option>{prescriptionDurations.map((duration) => <option key={duration}>{duration}</option>)}</Select>{medicine.duration === 'Custom' && <Input required maxLength="100" value={medicine.customDuration || ''} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, customDuration: event.target.value } : item) }))} placeholder="e.g. 21 days" />}</Field>
+              <Field label="WHEN to take"><Select required value={medicine.timing} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, timing: event.target.value } : item) }))}><option value="">Select timing</option>{prescriptionTimings.map((timing) => <option key={timing}>{timing}</option>)}</Select></Field>
               <Field label="Route"><Input maxLength="50" value={medicine.route} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, route: event.target.value } : item) }))} placeholder="e.g. Oral" /></Field>
               <Field label="Medicine instructions"><Input maxLength="500" value={medicine.instructions} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, instructions: event.target.value } : item) }))} placeholder="e.g. Take with food" /></Field>
               {prescription.medicines.length > 1 && <button type="button" onClick={() => setPrescription((value) => ({ ...value, medicines: value.medicines.filter((_, itemIndex) => itemIndex !== index) }))} className="justify-self-start text-xs text-rose-600 hover:underline sm:col-span-2">Remove medicine</button>}
             </div>)}
-            <button type="button" disabled={prescription.medicines.length >= 30} onClick={() => setPrescription((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))} className="text-left text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2">+ Add another medicine</button>
+            <button type="button" disabled={prescription.medicines.length >= 30} onClick={() => setPrescription((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', customDuration: '', timing: '', route: '', instructions: '' }] }))} className="text-left text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2">+ Add another medicine</button>
             <Field label="Prescription instructions"><Textarea rows="2" maxLength="2000" value={prescription.instructions} onChange={change(setPrescription, 'instructions')} placeholder="Additional guidance for the patient" /></Field>
             <Field label="Prescription follow-up"><Input maxLength="500" value={prescription.followUp} onChange={change(setPrescription, 'followUp')} placeholder="e.g. Review in 2 weeks" /></Field>
             <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
@@ -1070,6 +1076,7 @@ function RecordEditDialog({ editor, notify, onClose, onSaved }) {
               <Field label="Diagnosis"><Input required maxLength="2000" value={form.diagnosis} onChange={setField('diagnosis')} /></Field>
               {form.medicines.map((medicine, index) => <div key={index} className="grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2 sm:grid-cols-2">
                 {['name', 'dosage', 'frequency', 'duration', 'route', 'instructions'].map((field) => <Field key={field} label={`Medicine ${index + 1} ${field}`}><Input maxLength={field === 'instructions' ? 500 : field === 'route' ? 50 : 100} required={['name', 'dosage', 'frequency', 'duration'].includes(field)} value={medicine[field] || ''} onChange={(event) => setForm((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: event.target.value } : item) }))} /></Field>)}
+                <Field label={`Medicine ${index + 1} WHEN to take`}><Select value={medicine.timing || ''} onChange={(event) => setForm((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, timing: event.target.value } : item) }))}><option value="">Not specified</option>{prescriptionTimings.map((timing) => <option key={timing}>{timing}</option>)}</Select></Field>
                 {form.medicines.length > 1 && <button type="button" className="justify-self-start text-xs text-rose-600 underline sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: value.medicines.filter((_, itemIndex) => itemIndex !== index) }))}>Remove medicine</button>}
               </div>)}
               <button type="button" disabled={form.medicines.length >= 30} className="justify-self-start text-sm font-semibold text-teal-700 underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))}>Add medicine</button>

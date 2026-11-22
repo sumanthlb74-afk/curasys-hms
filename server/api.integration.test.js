@@ -678,6 +678,19 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(nurseAppointmentCheck.status, 201);
   const appointmentAfterCheck = await api('/api/appointments', { token: staffToken });
   assert.equal(appointmentAfterCheck.body.appointments.find(({ _id }) => _id === receptionistAppointment.body.appointment._id).status, 'Vitals done');
+  const consultedPrescription = await api('/api/prescriptions', {
+    method: 'POST',
+    token: doctorToken,
+    body: {
+      appointmentId: receptionistAppointment.body.appointment._id,
+      patientId: receptionistPatient.body.patient.id,
+      diagnosis: 'Consultation after preliminary check',
+      medicines: [{ name: 'Consult medicine', dosage: '10 mg', frequency: 'Once daily', duration: '5 days', timing: 'After food' }],
+    },
+  });
+  assert.equal(consultedPrescription.status, 201);
+  const appointmentAfterConsultation = await api('/api/appointments', { token: doctorToken });
+  assert.equal(appointmentAfterConsultation.body.appointments.find(({ _id }) => _id === receptionistAppointment.body.appointment._id).status, 'Consulted');
   assert.equal((await api('/api/appointments/not-an-id', {
     method: 'PUT',
     token: staffToken,
@@ -745,6 +758,15 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
       diagnosis: 'Invalid advice',
       medicines: [{ name: 'Example medicine', dosage: '10 mg', frequency: 'Once daily', duration: '5 days' }],
       advice: { suggestions: ['Invented suggestion'], notes: '' },
+    },
+  })).status, 400);
+  assert.equal((await api('/api/prescriptions', {
+    method: 'POST',
+    token: doctorToken,
+    body: {
+      patientId: doctorPatient.body.patient.id,
+      diagnosis: 'Invalid timing',
+      medicines: [{ name: 'Example medicine', dosage: '10 mg', frequency: 'Once daily', duration: '5 days', timing: 'With dinner' }],
     },
   })).status, 400);
   assert.equal((await api('/api/vitals', {

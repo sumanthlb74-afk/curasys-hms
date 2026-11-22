@@ -1,11 +1,12 @@
 import mongoose from 'mongoose';
-import { prescriptionAdviceSuggestions } from '../../shared/constants.js';
+import { prescriptionAdviceSuggestions, prescriptionTimings } from '../../shared/constants.js';
 
 const medicineSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 100 },
   dosage: { type: String, required: true, trim: true, maxlength: 100 },
   frequency: { type: String, required: true, trim: true, maxlength: 100 },
   duration: { type: String, required: true, trim: true, maxlength: 100 },
+  timing: { type: String, enum: ['', ...prescriptionTimings], default: '' },
   route: { type: String, trim: true, default: '', maxlength: 50 },
   instructions: { type: String, trim: true, default: '', maxlength: 500 },
 }, { _id: false });
