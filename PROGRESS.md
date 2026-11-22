@@ -98,9 +98,9 @@ Status: completed; CI remains the final isolated-Mongo verification.
 | Local Atlas connection | PASS | `GET /api/health` returned the single-word result `connected`; no URI or secret was printed. |
 | UHID migration and indexes | PASS | `npm.cmd run migrate:uhid` completed; startup built the new named appointment index without the previous conflict; verification returned `indexes-ok`. |
 | Demo seed | PASS | User confirmed the Atlas database is safe for fictional demo data; `npm.cmd run seed:demo` completed and refuses production. No password was printed or committed. |
-| Lint, unit tests, build, audit | PASS | Lint, build, and `npm audit --omit=dev` passed; 40 tests passed and 1 Mongo integration test was skipped because `MONGODB_TEST_URI` is unset. |
+| Lint, unit tests, build, audit | PASS | Lint, build, and `npm audit --omit=dev` passed; with the installed disposable MongoDB test server, all 41 tests passed with 0 skipped. |
 | Playwright desktop/phone smoke | PASS | Chromium ran headlessly; all 5 role dashboards passed at 1280×720 and 390×844 with screenshots, logout, no console errors, no failed/4xx/5xx requests, and no horizontal overflow. Fixed responsive card/table overflow. |
 | README and Render readiness | PASS | Added local seed instructions, demo login IDs without passwords, flow text, test commands, and Render variable/deploy checklist. |
 | Production writes | NOT RUN | No production records were created or changed. |
 
-Manual next steps: GitHub Actions must run the integration test against its isolated MongoDB service. Set `MONGODB_TEST_URI` only to a local MongoDB database beginning with `curasys_hms_test` if you want to reproduce that test on this computer; never use Atlas for it.
+Manual next steps: GitHub Actions should rerun the integration test against its isolated MongoDB service. The two corrected appointment fixtures were the cause of the prior CI test failure. Set `MONGODB_TEST_URI` only to a local MongoDB database beginning with `curasys_hms_test`; never use Atlas for it.

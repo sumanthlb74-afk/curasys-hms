@@ -592,7 +592,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     body: {
       patientId: doctorPatient.body.patient.id,
       doctorId: secondDoctorCreation.body.doctor.id,
-      department: 'Neurology',
+      department: 'Cardiology',
       date: new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10),
       time: '09:00',
       symptoms: 'Department mismatch',
@@ -630,7 +630,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     body: {
       patientId: staffPatient.body.patient.id,
       doctorId: secondDoctorCreation.body.doctor.id,
-      department: 'Cardiology',
+      department: 'Neurology',
       date,
       time: '11:00',
       symptoms: 'Neurology review',
