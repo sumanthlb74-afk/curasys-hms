@@ -27,6 +27,7 @@ import {
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  prescriptionAdviceSuggestions,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -258,6 +259,20 @@ function validPassword(value) {
   if (typeof value !== 'string') return false;
   const byteLength = Buffer.byteLength(value, 'utf8');
   return byteLength >= 8 && byteLength <= 72;
+}
+
+function validPrescriptionAdvice(value) {
+  if (value === undefined) return true;
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Array.isArray(value.suggestions)
+    && value.suggestions.length <= prescriptionAdviceSuggestions.length
+    && value.suggestions.every((suggestion) => prescriptionAdviceSuggestions.includes(suggestion))
+    && new Set(value.suggestions).size === value.suggestions.length
+    && (value.notes === undefined || (typeof value.notes === 'string' && value.notes.length <= 1000)),
+  );
 }
 
 async function assignUhid() {
@@ -1303,7 +1318,7 @@ app.delete('/api/clinical-notes/:id', authenticate, allow('doctor'), asyncRoute(
 }));
 
 app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
-  const { patientId, diagnosis, medicines, instructions, followUp } = request.body ?? {};
+  const { patientId, diagnosis, medicines, instructions, followUp, advice } = request.body ?? {};
   if (
     !validObjectId(patientId)
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
@@ -1315,6 +1330,7 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
       || ['route', 'instructions'].some((field) => medicine[field] !== undefined && (typeof medicine[field] !== 'string' || medicine[field].length > (field === 'route' ? 50 : 500))))
     || (instructions !== undefined && (typeof instructions !== 'string' || instructions.length > 2000))
     || (followUp !== undefined && (typeof followUp !== 'string' || followUp.length > 500))
+    || !validPrescriptionAdvice(advice)
   ) {
     response.status(400).json({ error: 'Select a patient and provide a diagnosis and at least one complete medicine.' });
     return;
@@ -1326,6 +1342,7 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
     medicines,
     instructions,
     followUp,
+    advice,
   });
   await audit(request, { action: 'prescription.created', entityType: 'prescription', entityId: prescription._id, patientId });
   response.status(201).json({ prescription });
@@ -1337,7 +1354,7 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(asyn
     return;
   }
   const filter = { _id: request.params.id, doctorId: request.user.id };
-  const { diagnosis, medicines, instructions, followUp } = request.body ?? {};
+  const { diagnosis, medicines, instructions, followUp, advice } = request.body ?? {};
   const update = {};
   if (typeof diagnosis === 'string' && diagnosis.trim()) update.diagnosis = diagnosis.trim();
   if (Array.isArray(medicines) && medicines.length > 0 && medicines.length <= 30
@@ -1348,6 +1365,11 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(asyn
   }
   if (typeof instructions === 'string' && instructions.length <= 2000) update.instructions = instructions;
   if (typeof followUp === 'string' && followUp.length <= 500) update.followUp = followUp;
+  if (advice !== undefined && validPrescriptionAdvice(advice)) update.advice = advice;
+  if (advice !== undefined && !validPrescriptionAdvice(advice)) {
+    response.status(400).json({ error: 'Choose only the listed lifestyle suggestions and provide notes up to 1000 characters.' });
+    return;
+  }
   if (!Object.keys(update).length) {
     response.status(400).json({ error: 'Provide a diagnosis or medicines to update.' });
     return;

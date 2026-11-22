@@ -11,6 +11,8 @@ import {
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  preliminaryCheckSymptoms,
+  prescriptionAdviceSuggestions,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -874,12 +876,12 @@ function DoctorDashboard({ user, notify }) {
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
-  const emptyPrescription = { patientId: '', diagnosis: '', instructions: '', followUp: '', medicines: [{ name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] };
-  const emptyVital = { patientId: '', heartRate: '', systolic: '', diastolic: '', respiratoryRate: '', temperatureC: '', bloodGlucose: '', oxygenSaturation: '', heightCm: '', weightKg: '', notes: '' };
+  const emptyPrescription = { patientId: '', diagnosis: '', instructions: '', followUp: '', advice: { suggestions: [], notes: '' }, medicines: [{ name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] };
   const emptyClinicalNote = { patientId: '', chiefComplaint: '', historyOfPresentIllness: '', examination: '', assessment: '', plan: '', followUp: '' };
   const [prescription, setPrescription] = useState(emptyPrescription);
-  const [vital, setVital] = useState(emptyVital);
   const [clinicalNote, setClinicalNote] = useState(emptyClinicalNote);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const selectedPatientChecks = vitals.filter((record) => String(record.patientId?._id || record.patientId) === prescription.patientId);
   const [filter, setFilter] = useState('Scheduled');
   const [profilePatientId, setProfilePatientId] = useState('');
   const profilePatient = patients.find((item) => item._id === profilePatientId);
@@ -900,18 +902,10 @@ function DoctorDashboard({ user, notify }) {
         medicines: prescription.medicines,
         instructions: prescription.instructions,
         followUp: prescription.followUp,
+        advice: prescription.advice,
       });
       notify('Prescription saved to the patient record.');
       setPrescription(emptyPrescription);
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-  };
-  const saveVital = async (event) => {
-    event.preventDefault();
-    try {
-      await api.post('/vitals', vital);
-      notify('Vital record saved.');
-      setVital(emptyVital);
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
@@ -924,13 +918,6 @@ function DoctorDashboard({ user, notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
-  const editRecord = async (path, recordId, values) => {
-    try {
-      await api.put(`${path}/${recordId}`, values);
-      notify('Record updated.');
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-  };
   const deleteRecord = async (path, recordId, label) => {
     if (!window.confirm(`Delete this ${label}? This action is recorded in the audit log.`)) return;
     try {
@@ -939,23 +926,9 @@ function DoctorDashboard({ user, notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
-  const editClinicalNote = (note) => {
-    const assessment = window.prompt('Edit assessment', note.assessment);
-    if (assessment === null) return;
-    const plan = window.prompt('Edit care plan', note.plan);
-    if (plan === null) return;
-    void editRecord('/clinical-notes', note._id, { assessment, plan });
-  };
-  const editPrescription = (item) => {
-    const diagnosis = window.prompt('Edit diagnosis', item.diagnosis);
-    if (diagnosis === null) return;
-    void editRecord('/prescriptions', item._id, { diagnosis });
-  };
-  const editVital = (item) => {
-    const notes = window.prompt('Edit clinical notes', item.notes || '');
-    if (notes === null) return;
-    void editRecord('/vitals', item._id, { notes });
-  };
+  const editClinicalNote = (note) => setEditingRecord({ type: 'clinicalNote', record: note });
+  const editPrescription = (record) => setEditingRecord({ type: 'prescription', record });
+  const editVital = (record) => setEditingRecord({ type: 'vital', record });
   const updateAppointment = async (id, values) => {
     try {
       await api.put(`/appointments/${id}`, values);
@@ -1002,16 +975,26 @@ function DoctorDashboard({ user, notify }) {
             <button type="button" disabled={prescription.medicines.length >= 30} onClick={() => setPrescription((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))} className="text-left text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2">+ Add another medicine</button>
             <Field label="Prescription instructions"><Textarea rows="2" maxLength="2000" value={prescription.instructions} onChange={change(setPrescription, 'instructions')} placeholder="Additional guidance for the patient" /></Field>
             <Field label="Prescription follow-up"><Input maxLength="500" value={prescription.followUp} onChange={change(setPrescription, 'followUp')} placeholder="e.g. Review in 2 weeks" /></Field>
+            <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+              <legend className="px-1 text-sm font-medium">Lifestyle advice</legend>
+              {prescriptionAdviceSuggestions.map((suggestion) => <label key={suggestion} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prescription.advice.suggestions.includes(suggestion)} onChange={(event) => setPrescription((value) => ({ ...value, advice: { ...value.advice, suggestions: event.target.checked ? [...value.advice.suggestions, suggestion] : value.advice.suggestions.filter((item) => item !== suggestion) } }))} />{suggestion}</label>)}
+              <Field label="Other advice (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={prescription.advice.notes} onChange={(event) => setPrescription((value) => ({ ...value, advice: { ...value.advice, notes: event.target.value } }))} /></Field>
+            </fieldset>
             <button className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2">Save prescription</button>
           </form>
         </Card>
-        <Card title="Record patient vitals" icon={Activity}>
-          <form onSubmit={saveVital} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Patient"><Select required value={vital.patientId} onChange={change(setVital, 'patientId')}><option value="">Select a patient</option>{patients.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.uhid}</option>)}</Select></Field>
-            {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['respiratoryRate', 'Respiratory rate (/min)', '1', '100', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['bloodGlucose', 'Blood glucose (mg/dL)', '1', '2000', '1'], ['oxygenSaturation', 'Oxygen saturation (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={vital[key]} onChange={change(setVital, key)} /></Field>)}
-            <Field label="Clinical notes"><Textarea rows="2" maxLength="1000" value={vital.notes} onChange={change(setVital, 'notes')} /></Field>
-            <button className="rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 dark:text-teal-300 sm:col-span-2">Save vital record</button>
-          </form>
+        <Card title={`Preliminary checks · ${selectedPatientChecks.length}`} icon={Activity}>
+          {!prescription.patientId ? <Empty>Select a patient in the prescription form to view their checks.</Empty>
+            : selectedPatientChecks.length === 0 ? <Empty>No preliminary checks recorded for this patient.</Empty>
+              : <div className="max-h-[34rem] space-y-3 overflow-y-auto">{selectedPatientChecks.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800/60">
+                <p className="font-semibold">{patients.find((patient) => patient._id === prescription.patientId)?.name} · {new Date(item.createdAt).toLocaleString()}</p>
+                <p className="mt-1 text-xs text-slate-500">Recorded by {item.enteredBy?.name || item.recordedBy?.name || 'Medical staff'} ({item.enteredByRole || 'staff'})</p>
+                {item.editedBy?.name && <p className="mt-1 text-xs font-medium text-teal-700 dark:text-teal-300">Edited by Dr. {item.editedBy.name} · {item.editedAt ? new Date(item.editedAt).toLocaleString() : ''}</p>}
+                <p className="mt-2">{[['Heart rate', item.heartRate && `${item.heartRate} bpm`], ['Temperature', item.temperatureC && `${item.temperatureC} °C`], ['Blood pressure', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['SpO₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>
+                {item.symptoms?.length > 0 && <p className="mt-1"><strong>Symptoms:</strong> {item.symptoms.map((symptom) => symptom === 'Other' && item.symptomOther ? `Other: ${item.symptomOther}` : symptom).join(' · ')}</p>}
+                {item.notes && <p className="mt-1 whitespace-pre-wrap">{item.notes}</p>}
+                <button type="button" onClick={() => editVital(item)} className="mt-3 text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit check</button>
+              </article>)}</div>}
         </Card>
       </div>
       <Card title="Document a clinical visit" icon={ClipboardList}>
@@ -1030,15 +1013,183 @@ function DoctorDashboard({ user, notify }) {
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No clinical visit notes have been added.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="flex justify-between gap-2"><p className="font-semibold">{note.patientId?.name} · {note.patientId?.uhid}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p><p className="mt-1 text-sm"><span className="font-medium">Assessment:</span> {note.assessment}</p><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{note.plan}</p>{note.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editClinicalNote(note)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/clinical-notes', note._id, 'visit note')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</article>)}</div>}
       </Card>
       <Card title="Prescriptions authored" icon={ClipboardList}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been written yet.</Empty> : <div className="grid gap-3 md:grid-cols-2">{prescriptions.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">{item.medicines.map((medicine) => `${medicine.name} ${medicine.dosage} · ${medicine.frequency} · ${medicine.duration}`).join(', ')}</p>{item.instructions && <p className="mt-2 text-sm">{item.instructions}</p>}{item.followUp && <p className="mt-1 text-xs text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editPrescription(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/prescriptions', item._id, 'prescription')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been written yet.</Empty> : <div className="grid gap-3 md:grid-cols-2">{prescriptions.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">{item.medicines.map((medicine) => `${medicine.name} ${medicine.dosage} · ${medicine.frequency} · ${medicine.duration}`).join(', ')}</p>{item.instructions && <p className="mt-2 text-sm">{item.instructions}</p>}{item.followUp && <p className="mt-1 text-xs text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.advice?.suggestions?.length > 0 && <p className="mt-2 text-sm">Advice: {item.advice.suggestions.join(' · ')}</p>}{item.advice?.notes && <p className="mt-1 text-sm">{item.advice.notes}</p>}{item.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editPrescription(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/prescriptions', item._id, 'prescription')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
       </Card>
       <Card title="Patient clinical records" icon={Activity}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No clinical measurements have been entered.</Empty> : <div className="grid gap-3 md:grid-cols-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-sm">{item.notes}</p>}{item.recordedBy?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editVital(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/vitals', item._id, 'vital record')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No preliminary checks have been entered.</Empty> : <div className="grid gap-3 md:grid-cols-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">Recorded by {item.enteredBy?.name || item.recordedBy?.name || 'Medical staff'} ({item.enteredByRole || 'staff'})</p>{item.editedBy?.name && <p className="mt-1 text-xs font-medium text-teal-700 dark:text-teal-300">Edited by Dr. {item.editedBy.name}</p>}<p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.symptoms?.length > 0 && <p className="mt-1 text-sm">Symptoms: {item.symptoms.join(' · ')}{item.symptomOther && ` · ${item.symptomOther}`}</p>}{item.notes && <p className="mt-1 whitespace-pre-wrap text-sm">{item.notes}</p>}<button type="button" onClick={() => editVital(item)} className="mt-3 text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit check</button></div>)}</div>}
       </Card>
       <Card title="Patient-centered chart" icon={Activity}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : !profilePatient ? <Empty>Choose a patient above to view their complete recent chart.</Empty> : patientChart.length === 0 ? <Empty>No notes, prescriptions, or vitals are recorded for this patient.</Empty> : <div className="space-y-3">{patientChart.map(({ record, type }) => <article key={`${type}-${record._id}`} className="rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-700"><div className="flex justify-between gap-3"><strong>{type}</strong><time className="text-xs text-slate-500">{new Date(record.createdAt).toLocaleString()}</time></div><p className="mt-1">{type === 'Visit note' ? `${record.chiefComplaint} · ${record.assessment} · ${record.plan}` : type === 'Prescription' ? `${record.diagnosis} · ${record.medicines.map((medicine) => medicine.name).join(', ')}` : [['HR', record.heartRate], ['BP', record.systolic && record.diastolic ? `${record.systolic}/${record.diastolic}` : null], ['Temp °C', record.temperatureC], ['O₂ %', record.oxygenSaturation]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p></article>)}</div>}
       </Card>
+      {editingRecord && <RecordEditDialog editor={editingRecord} notify={notify} onClose={() => setEditingRecord(null)} onSaved={refresh} />}
     </main>
+  );
+}
+
+function RecordEditDialog({ editor, notify, onClose, onSaved }) {
+  const { type, record } = editor;
+  const [form, setForm] = useState(() => {
+    if (type === 'prescription') {
+      return {
+        diagnosis: record.diagnosis || '',
+        medicines: record.medicines.map((medicine) => ({ ...medicine })),
+        instructions: record.instructions || '',
+        followUp: record.followUp || '',
+        advice: { suggestions: record.advice?.suggestions || [], notes: record.advice?.notes || '' },
+      };
+    }
+    if (type === 'clinicalNote') {
+      return Object.fromEntries(['chiefComplaint', 'historyOfPresentIllness', 'examination', 'assessment', 'plan', 'followUp']
+        .map((field) => [field, record[field] || '']));
+    }
+    return {
+      ...Object.fromEntries([
+        'heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose',
+        'oxygenSaturation', 'heightCm', 'weightKg',
+      ].map((field) => [field, record[field] ?? ''])),
+      notes: record.notes || '',
+      symptoms: record.symptoms || [],
+      symptomOther: record.symptomOther || '',
+    };
+  });
+  const [saving, setSaving] = useState(false);
+  const setField = (field) => (event) => setForm((value) => ({ ...value, [field]: event.target.value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    try {
+      const path = type === 'clinicalNote' ? '/clinical-notes' : type === 'prescription' ? '/prescriptions' : '/vitals';
+      let payload = form;
+      if (type === 'vital') {
+        payload = Object.fromEntries(Object.entries(form).map(([field, value]) => [
+          field,
+          ['heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose', 'oxygenSaturation', 'heightCm', 'weightKg'].includes(field)
+            ? value === '' ? null : Number(value)
+            : value,
+        ]));
+        if (!form.symptoms.includes('Other')) payload.symptomOther = '';
+      }
+      await api.put(`${path}/${record._id}`, payload);
+      notify(type === 'vital' ? 'Preliminary check updated and audited.' : 'Record updated.');
+      onSaved();
+      onClose();
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const title = type === 'prescription' ? 'Edit prescription' : type === 'clinicalNote' ? 'Edit doctor’s note' : 'Edit preliminary check';
+
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-labelledby="edit-record-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
+      <div className="grid min-h-full place-items-center">
+        <section className="max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6 dark:bg-slate-900">
+          <h2 id="edit-record-title" className="text-lg font-bold">{title}</h2>
+          <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-2">
+            {type === 'clinicalNote' && <>
+              <Field label="Chief complaint"><Input required maxLength="1000" value={form.chiefComplaint} onChange={setField('chiefComplaint')} /></Field>
+              <Field label="History of present illness"><Textarea rows="3" maxLength="3000" value={form.historyOfPresentIllness} onChange={setField('historyOfPresentIllness')} /></Field>
+              <Field label="Examination findings"><Textarea rows="3" maxLength="3000" value={form.examination} onChange={setField('examination')} /></Field>
+              <Field label="Assessment / diagnosis"><Textarea required rows="2" maxLength="2000" value={form.assessment} onChange={setField('assessment')} /></Field>
+              <Field label="Care plan"><Textarea required rows="2" maxLength="3000" value={form.plan} onChange={setField('plan')} /></Field>
+              <Field label="Follow-up"><Input maxLength="1000" value={form.followUp} onChange={setField('followUp')} /></Field>
+            </>}
+            {type === 'prescription' && <>
+              <Field label="Diagnosis"><Input required maxLength="2000" value={form.diagnosis} onChange={setField('diagnosis')} /></Field>
+              {form.medicines.map((medicine, index) => <div key={index} className="grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2 sm:grid-cols-2">
+                {['name', 'dosage', 'frequency', 'duration', 'route', 'instructions'].map((field) => <Field key={field} label={`Medicine ${index + 1} ${field}`}><Input maxLength={field === 'instructions' ? 500 : field === 'route' ? 50 : 100} required={['name', 'dosage', 'frequency', 'duration'].includes(field)} value={medicine[field] || ''} onChange={(event) => setForm((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: event.target.value } : item) }))} /></Field>)}
+                {form.medicines.length > 1 && <button type="button" className="justify-self-start text-xs text-rose-600 underline sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: value.medicines.filter((_, itemIndex) => itemIndex !== index) }))}>Remove medicine</button>}
+              </div>)}
+              <button type="button" disabled={form.medicines.length >= 30} className="justify-self-start text-sm font-semibold text-teal-700 underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))}>Add medicine</button>
+              <Field label="Prescription instructions"><Textarea rows="2" maxLength="2000" value={form.instructions} onChange={setField('instructions')} /></Field>
+              <Field label="Prescription follow-up"><Input maxLength="500" value={form.followUp} onChange={setField('followUp')} /></Field>
+              <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+                <legend className="px-1 text-sm font-medium">Lifestyle advice</legend>
+                {prescriptionAdviceSuggestions.map((suggestion) => <label key={suggestion} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.advice.suggestions.includes(suggestion)} onChange={(event) => setForm((value) => ({ ...value, advice: { ...value.advice, suggestions: event.target.checked ? [...value.advice.suggestions, suggestion] : value.advice.suggestions.filter((item) => item !== suggestion) } }))} />{suggestion}</label>)}
+                <Field label="Other advice"><Textarea rows="3" maxLength="1000" value={form.advice.notes} onChange={(event) => setForm((value) => ({ ...value, advice: { ...value.advice, notes: event.target.value } }))} /></Field>
+              </fieldset>
+            </>}
+            {type === 'vital' && <>
+              {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['oxygenSaturation', 'SpO₂ (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1'], ['respiratoryRate', 'Respiratory rate (/min)', '1', '100', '1'], ['bloodGlucose', 'Blood glucose (mg/dL)', '1', '2000', '1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={form[key]} onChange={setField(key)} /></Field>)}
+              <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+                <legend className="px-1 text-sm font-medium">Symptoms</legend>
+                <Select multiple size={preliminaryCheckSymptoms.length} value={form.symptoms} onChange={(event) => setForm((value) => ({
+                  ...value,
+                  symptoms: Array.from(event.target.selectedOptions, (option) => option.value),
+                }))}>
+                  {preliminaryCheckSymptoms.map((symptom) => <option key={symptom}>{symptom}</option>)}
+                </Select>
+                {form.symptoms.includes('Other') && <Field label="Other symptom (max 200 characters)"><Input maxLength="200" value={form.symptomOther} onChange={setField('symptomOther')} /></Field>}
+              </fieldset>
+              <Field label="Note (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={form.notes} onChange={setField('notes')} /></Field>
+            </>}
+            <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">Cancel</button><button disabled={saving} className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save changes'}</button></div>
+          </form>
+        </section>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function PreliminaryCheckForm({ patients, notify, onSaved }) {
+  const [form, setForm] = useState({
+    patientId: '',
+    heartRate: '',
+    temperatureC: '',
+    systolic: '',
+    diastolic: '',
+    oxygenSaturation: '',
+    heightCm: '',
+    weightKg: '',
+    symptoms: [],
+    symptomOther: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.post('/vitals', {
+        ...form,
+        symptomOther: form.symptoms.includes('Other') ? form.symptomOther : '',
+      });
+      notify('Preliminary check recorded.');
+      setForm({
+        patientId: '', heartRate: '', temperatureC: '', systolic: '', diastolic: '',
+        oxygenSaturation: '', heightCm: '', weightKg: '', symptoms: [], symptomOther: '', notes: '',
+      });
+      onSaved();
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Card title="Preliminary check" icon={Activity}>
+      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Patient"><Select required value={form.patientId} onChange={change('patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+        {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['oxygenSaturation', 'SpO₂ (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={form[key]} onChange={change(key)} /></Field>)}
+        <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+          <legend className="px-1 text-sm font-medium">Symptoms (select all that apply)</legend>
+          <Select multiple size={preliminaryCheckSymptoms.length} value={form.symptoms} onChange={(event) => setForm((value) => ({
+            ...value,
+            symptoms: Array.from(event.target.selectedOptions, (option) => option.value),
+          }))}>
+            {preliminaryCheckSymptoms.map((symptom) => <option key={symptom}>{symptom}</option>)}
+          </Select>
+          {form.symptoms.includes('Other') && <Field label="Describe other symptom (max 200 characters)"><Input maxLength="200" value={form.symptomOther} onChange={change('symptomOther')} required /></Field>}
+        </fieldset>
+        <Field label="Note (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={form.notes} onChange={change('notes')} /></Field>
+        <button disabled={saving || !patients.length} className="self-end rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save preliminary check'}</button>
+      </form>
+    </Card>
   );
 }
 

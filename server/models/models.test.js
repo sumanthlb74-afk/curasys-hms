@@ -200,6 +200,27 @@ test('prescription requires at least one fully specified medicine', async () => 
   assert.ok(error.errors.medicines);
 });
 
+test('prescription advice is defaulted and constrained to the shared suggestions', async () => {
+  const prescription = new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Daily', duration: '1 day' }],
+    advice: { suggestions: ['Exercise regularly'], notes: 'Drink water.' },
+  });
+  assert.equal(await getValidationError(prescription), null);
+  assert.deepEqual(prescription.advice.suggestions, ['Exercise regularly']);
+  assert.ok(prescriptionAdviceSuggestions.includes('Follow-up visit in 1 week'));
+  const invalid = await getValidationError(new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Daily', duration: '1 day' }],
+    advice: { suggestions: ['Unlisted advice'] },
+  }));
+  assert.ok(invalid.errors['advice.suggestions.0']);
+});
+
 test('billing requires a patient, administrator, positive whole-paise amount, and description', async () => {
   const valid = new Billing({
     patientId: '507f1f77bcf86cd799439011',
