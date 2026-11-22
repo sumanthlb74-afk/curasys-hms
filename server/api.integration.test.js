@@ -798,7 +798,11 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   const otherVital = await api('/api/vitals', {
     method: 'POST',
     token: secondDoctorToken,
-    body: { patientId: staffPatient.body.patient.id, heartRate: 80 },
+    body: {
+      patientId: staffPatient.body.patient.id,
+      heartRate: 80,
+      symptoms: ['Headache and body ache'],
+    },
   });
   assert.equal(otherClinicalNote.status, 201);
   assert.equal(otherPrescription.status, 201);
