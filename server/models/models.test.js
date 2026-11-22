@@ -9,7 +9,16 @@ import Prescription from './Prescription.js';
 import User from './User.js';
 import Vital from './Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
-import { bloodGroups, departments, triageLevels, wards } from '../../shared/constants.js';
+import {
+  bloodGroups,
+  departments,
+  paymentMethods,
+  preliminaryCheckSymptoms,
+  prescriptionAdviceSuggestions,
+  triageLevels,
+  userRoles,
+  wards,
+} from '../../shared/constants.js';
 
 test('shared contact validators reject wrong types and oversized values', () => {
   assert.equal(isOptionalPhone(123), false);
@@ -22,6 +31,8 @@ test('shared contact validators reject wrong types and oversized values', () => 
 
 test('shared metadata is used by the Mongoose model enums', () => {
   assert.deepEqual(User.schema.path('bloodGroup').enumValues, ['', ...bloodGroups]);
+  assert.deepEqual(User.schema.path('role').enumValues, userRoles);
+  assert.deepEqual(AuditLog.schema.path('actorRole').enumValues, [...userRoles, 'anonymous']);
   assert.deepEqual(Appointment.schema.path('triage').enumValues, triageLevels);
   assert.deepEqual(Bed.schema.path('ward').enumValues, wards);
   assert.ok(departments.includes('Cardiology'));
@@ -60,6 +71,16 @@ test('user schema accepts the medical staff role', async () => {
     email: 'staff@example.test',
     password: 'a-secure-password',
     role: 'staff',
+  }));
+  assert.equal(error, null);
+});
+
+test('user schema accepts receptionist accounts', async () => {
+  const error = await getValidationError(new User({
+    name: 'Clinic Receptionist',
+    email: 'receptionist@example.test',
+    password: 'a-secure-password',
+    role: 'receptionist',
   }));
   assert.equal(error, null);
 });
@@ -188,6 +209,27 @@ test('prescription requires at least one fully specified medicine', async () => 
   assert.ok(error.errors.medicines);
 });
 
+test('prescription advice is defaulted and constrained to the shared suggestions', async () => {
+  const prescription = new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Daily', duration: '1 day' }],
+    advice: { suggestions: ['Exercise regularly'], notes: 'Drink water.' },
+  });
+  assert.equal(await getValidationError(prescription), null);
+  assert.deepEqual(prescription.advice.suggestions, ['Exercise regularly']);
+  assert.ok(prescriptionAdviceSuggestions.includes('Follow-up visit in 1 week'));
+  const invalid = await getValidationError(new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Daily', duration: '1 day' }],
+    advice: { suggestions: ['Unlisted advice'] },
+  }));
+  assert.ok(invalid.errors['advice.suggestions.0']);
+});
+
 test('billing requires a patient, administrator, positive whole-paise amount, and description', async () => {
   const valid = new Billing({
     patientId: '507f1f77bcf86cd799439011',
@@ -198,6 +240,8 @@ test('billing requires a patient, administrator, positive whole-paise amount, an
   assert.equal(await getValidationError(valid), null);
   assert.equal(valid.status, 'Unpaid');
   assert.equal(valid.paidAt, null);
+  assert.deepEqual(Billing.schema.path('paymentMethod').enumValues, ['', ...paymentMethods]);
+  assert.equal(valid.discountPaise, 0);
   const invoiceIndex = Billing.schema.indexes().find(([keys]) => keys.invoiceNumber === 1);
   assert.ok(invoiceIndex);
   assert.equal(invoiceIndex[1].unique, true);
@@ -229,4 +273,24 @@ test('vital schema rejects measurements outside validated ranges', async () => {
   }));
   assert.ok(error.errors.oxygenSaturation);
   assert.ok(error.errors.temperatureC);
+});
+
+test('preliminary checks validate their symptoms against the shared list', async () => {
+  const valid = new Vital({
+    patientId: '507f1f77bcf86cd799439011',
+    recordedBy: '507f1f77bcf86cd799439012',
+    enteredBy: '507f1f77bcf86cd799439012',
+    enteredByRole: 'staff',
+    heartRate: 72,
+    symptoms: ['Fever and cold', 'Other'],
+    symptomOther: 'Light sensitivity',
+  });
+  assert.equal(await getValidationError(valid), null);
+  assert.ok(preliminaryCheckSymptoms.includes('Stomach pain or nausea'));
+  const invalid = await getValidationError(new Vital({
+    patientId: '507f1f77bcf86cd799439011',
+    recordedBy: '507f1f77bcf86cd799439012',
+    symptoms: ['Unknown symptom'],
+  }));
+  assert.ok(invalid.errors['symptoms.0']);
 });

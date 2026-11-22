@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, BedDouble, CalendarDays, Check, ClipboardList, LogOut, Moon, Plus, Receipt, ShieldCheck,
   Stethoscope, Sun, Users, X,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import api from './api.js';
 import {
   bloodGroups,
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  paymentMethods,
+  preliminaryCheckSymptoms,
+  prescriptionAdviceSuggestions,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -18,6 +23,7 @@ const rolePaths = {
   patient: '/patient-portal',
   doctor: '/doctor-dashboard',
   staff: '/medical-staff',
+  receptionist: '/receptionist-dashboard',
   admin: '/admin-command-center',
 };
 const configuredClinicStartHour = Number(import.meta.env.VITE_CLINIC_START_HOUR ?? defaultClinicStartHour);
@@ -39,6 +45,22 @@ const appointmentSlots = Array.from({ length: clinicEndHour - clinicStartHour },
   return { time, label: `${startLabel} – ${endLabel} (${time}–${endTime})` };
 });
 
+let apiWarmupPromise;
+let setupStatusPromise;
+function wakeApi() {
+  if (!apiWarmupPromise) {
+    apiWarmupPromise = api.get('/health', { timeout: 60_000 }).catch(() => null);
+  }
+  return apiWarmupPromise;
+}
+
+function getSetupStatus() {
+  if (!setupStatusPromise) {
+    setupStatusPromise = wakeApi().then(() => api.get('/auth/setup-status'));
+  }
+  return setupStatusPromise;
+}
+
 function localDateValue(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -47,10 +69,6 @@ function localDateValue(date = new Date()) {
 }
 
 function formatAppointmentDate(date) {
-  return new Date(date).toLocaleDateString(undefined, { timeZone: 'UTC' });
-}
-
-function formatDateOnly(date) {
   return new Date(date).toLocaleDateString(undefined, { timeZone: 'UTC' });
 }
 
@@ -100,10 +118,6 @@ function emptyPatientForm() {
 
 function formatCurrency(paise) {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'INR' }).format(paise / 100);
-}
-
-function newBillForm() {
-  return { patientId: '', totalAmount: '500', description: 'Consultation fee' };
 }
 
 function useTheme() {
@@ -206,6 +220,9 @@ function PaginationControls({ page, total, limit, onPageChange }) {
 }
 
 function App() {
+  useEffect(() => {
+    void wakeApi();
+  }, []);
   return (
     <BrowserRouter>
       <AppRoutes />
@@ -328,6 +345,7 @@ function AppRoutes() {
         <Route path="/patient-portal" element={<Protected user={user} role="patient"><PatientDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/doctor-dashboard" element={<Protected user={user} role="doctor"><DoctorDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/medical-staff" element={<Protected user={user} role="staff"><StaffDashboard notify={notify} /></Protected>} />
+        <Route path="/receptionist-dashboard" element={<Protected user={user} role="receptionist"><ReceptionistDashboard notify={notify} /></Protected>} />
         <Route path="/admin-command-center" element={<Protected user={user} role="admin"><AdminDashboard notify={notify} /></Protected>} />
         <Route path="*" element={<Navigate to={user ? path : '/login'} replace state={{ from: location.pathname }} />} />
       </Routes>
@@ -382,10 +400,17 @@ function ChangePasswordPage({ user, onAuth, notify, required = false }) {
 
 function AuthPage({ onAuth, notify, patientOnly = false }) {
   const [mode, setMode] = useState('login');
+  const [setupOpen, setSetupOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showWakeMessage, setShowWakeMessage] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '' });
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  useEffect(() => {
+    if (patientOnly) return;
+    getSetupStatus()
+      .then(({ data }) => setSetupOpen(data.setupOpen))
+      .catch(() => setSetupOpen(false));
+  }, [patientOnly]);
   useEffect(() => {
     if (!loading) return undefined;
     const timer = window.setTimeout(() => setShowWakeMessage(true), 4000);
@@ -426,7 +451,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
           <h1 className="text-2xl font-bold tracking-tight">{patientOnly ? 'Patient portal' : 'Curasys Medical Center'}</h1>
           <p className="mt-1 text-sm text-slate-500">{patientOnly ? 'Sign in with the email and temporary password provided by your care team.' : 'Hospital information system'}</p>
         </div>
-        {!patientOnly && <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+        {!patientOnly && setupOpen && <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
           {['login', 'register'].map((item) => <button key={item} onClick={() => setMode(item)} className={`rounded-lg py-2 text-sm font-semibold capitalize ${mode === item ? 'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300' : 'text-slate-500'}`}>{item === 'register' ? 'Administrator setup' : 'Sign in'}</button>)}
         </div>}
         <form onSubmit={submit} className="grid gap-4">
@@ -436,7 +461,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
           {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} maxLength={72} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
           {isRegister && <Field label="Admin registration key"><Input type="password" value={form.adminRegistrationKey} onChange={change('adminRegistrationKey')} required /></Field>}
-          {isRegister && <p className="text-xs leading-relaxed text-slate-500">Administrator setup requires the private key from the project owner. Use an email address not already used by another account. Additional administrators must change their temporary password at first sign-in.</p>}
+          {isRegister && <p className="text-xs leading-relaxed text-slate-500">Public administrator setup requires the private key and is available only during bootstrap or an explicitly enabled setup window. You keep the password you choose; accounts created by an administrator must change their temporary password at first sign-in.</p>}
           {loading && showWakeMessage && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">Render's free API may sleep after inactivity and can take about a minute to wake. Keep this page open. If the request times out, try signing in with the same email before submitting again.</p>}
           <button disabled={loading} className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 font-semibold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700 disabled:opacity-60">{loading ? 'Please wait…' : isRegister ? 'Create account' : patientOnly ? 'Sign in to patient portal' : 'Sign in securely'}</button>
         </form>
@@ -455,36 +480,63 @@ function useLoad(notify, requests) {
   const [revision, setRevision] = useState(0);
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadFailure, setLoadFailure] = useState(null);
+  const hasLoaded = useRef(false);
   const refresh = useCallback(() => {
-    setLoading(true);
-    setError(null);
     setRevision((value) => value + 1);
   }, []);
   const requestSignature = JSON.stringify(requests);
   useEffect(() => {
     let active = true;
     const requestList = JSON.parse(requestSignature);
+    if (hasLoaded.current) setRefreshing(true);
+    else setLoading(true);
     Promise.all(requestList.map((request) => api.get(request.path)))
       .then((responses) => {
-        if (active) setData(Object.fromEntries(responses.map((response, index) => [requestList[index].key, response.data])));
+        if (active) {
+          setData(Object.fromEntries(responses.map((response, index) => [requestList[index].key, response.data])));
+          hasLoaded.current = true;
+        }
       })
       .catch((loadError) => {
         if (active) {
-          setError(loadError.message);
+          setLoadFailure({ message: loadError.message, requestSignature, revision });
           notify(loadError.message, 'error');
         }
       })
-      .finally(() => { if (active) setLoading(false); });
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      });
     return () => { active = false; };
   }, [revision, notify, requestSignature]);
-  return { data, loading, error, refresh };
+  const error = loadFailure?.requestSignature === requestSignature
+    && loadFailure?.revision === revision
+    ? loadFailure.message
+    : null;
+  return { data, loading, refreshing, error, refresh };
+}
+
+function useDebouncedValue(value, delay = 400) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debouncedValue;
 }
 
 function PatientRegistrationForm({ notify, onCreated }) {
   const [form, setForm] = useState(emptyPatientForm);
   const [showPassword, setShowPassword] = useState(false);
   const [createdCredentials, setCreatedCredentials] = useState(null);
+  const copyCredentialsRef = useRef(null);
+  useEffect(() => {
+    if (createdCredentials) copyCredentialsRef.current?.focus();
+  }, [createdCredentials]);
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   const changeEmergencyContact = (key) => (event) => setForm((value) => ({
     ...value,
@@ -540,7 +592,164 @@ function PatientRegistrationForm({ notify, onCreated }) {
         </div>
         <button className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2"><Plus className="h-4 w-4" />Create patient chart & login</button>
       </form>
-      {createdCredentials && <div role="dialog" aria-modal="true" aria-labelledby="created-patient-title" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4"><section className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"><h2 id="created-patient-title" className="text-lg font-bold">Patient login created</h2><p className="mt-2 text-sm text-slate-500">Share these credentials securely. This temporary password is shown only once and must be changed at first sign-in.</p><p className="mt-4 text-sm"><strong>Email:</strong> {createdCredentials.email}</p><p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {createdCredentials.password}</p><p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {createdCredentials.uhid}</p><div className="mt-5 flex justify-end gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => { try { await navigator.clipboard.writeText(createdCredentials.password); notify('Temporary password copied.'); } catch { notify('Clipboard access is unavailable. Copy the password manually.', 'error'); } }}>Copy password</button><button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCreatedCredentials(null)}>Done</button></div></section></div>}
+      {createdCredentials && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="created-patient-title" className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/60 p-4">
+          <section className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+            <h2 id="created-patient-title" className="text-lg font-bold">Patient login created</h2>
+            <p className="mt-2 text-sm text-slate-500">Share these credentials securely. This temporary password is shown only once and must be changed at first sign-in.</p>
+            <p className="mt-4 break-all text-sm"><strong>Email:</strong> {createdCredentials.email}</p>
+            <p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {createdCredentials.password}</p>
+            <p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {createdCredentials.uhid}</p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button ref={copyCredentialsRef} type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(`Email: ${createdCredentials.email}\nPassword: ${createdCredentials.password}`);
+                  notify('Patient email and temporary password copied.');
+                } catch {
+                  notify('Clipboard access is unavailable. Copy the credentials manually.', 'error');
+                }
+              }}>Copy email + password</button>
+              <button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCreatedCredentials(null)}>Done</button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+    </Card>
+  );
+}
+
+function AdminAccountForm({ notify, onCreated }) {
+  const [form, setForm] = useState({ ...emptyPatientForm(), role: 'doctor', specialization: departments[0] });
+  const [showPassword, setShowPassword] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [credentials, setCredentials] = useState(null);
+  const copyRef = useRef(null);
+  const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  const changeEmergencyContact = (key) => (event) => setForm((value) => ({
+    ...value,
+    emergencyContact: { ...value.emergencyContact, [key]: event.target.value },
+  }));
+  useEffect(() => {
+    if (credentials) copyRef.current?.focus();
+  }, [credentials]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (form.password !== form.confirmPassword) {
+      notify('The temporary passwords do not match.', 'error');
+      return;
+    }
+    if (creating) return;
+    setCreating(true);
+    try {
+      const routes = {
+        admin: ['/admins', 'administrator'],
+        doctor: ['/doctors', 'doctor'],
+        staff: ['/staff', 'staff'],
+        receptionist: ['/receptionists', 'receptionist'],
+        patient: ['/patients', 'patient'],
+      };
+      const [path, responseKey] = routes[form.role];
+      const payload = { ...form };
+      delete payload.confirmPassword;
+      if (form.role === 'patient') {
+        payload.allergies = parseList(form.allergies);
+        payload.chronicConditions = parseList(form.chronicConditions);
+        payload.currentMedications = parseList(form.currentMedications);
+      } else {
+        for (const field of [
+          'dateOfBirth', 'sex', 'bloodGroup', 'address', 'emergencyContact',
+          'allergies', 'chronicConditions', 'currentMedications', 'heightCm', 'weightKg',
+        ]) delete payload[field];
+      }
+      if (form.role !== 'doctor') delete payload.specialization;
+      const { data } = await api.post(path, payload);
+      const created = data[responseKey];
+      setCredentials({ email: created.email, password: form.password, uhid: created.uhid });
+      notify(`${form.role === 'patient' ? 'Patient' : form.role === 'staff' ? 'Medical staff' : form.role[0].toUpperCase() + form.role.slice(1)} account created; password change is required at first sign-in.`);
+      setForm({ ...emptyPatientForm(), role: form.role, specialization: departments[0] });
+      setShowPassword(false);
+      onCreated();
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <Card title="Create account" icon={Users}>
+      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Role">
+          <Select value={form.role} onChange={change('role')}>
+            <option value="doctor">Doctor</option>
+            <option value="staff">Medical Staff (nurse)</option>
+            <option value="receptionist">Receptionist</option>
+            <option value="patient">Patient</option>
+            <option value="admin">Administrator</option>
+          </Select>
+        </Field>
+        <Field label="Full name"><Input autoComplete="name" maxLength="100" value={form.name} onChange={change('name')} required /></Field>
+        <Field label="Email / login ID"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
+        <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
+        <Field label="Temporary password">
+          <span className="flex gap-2">
+            <Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required />
+            <button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
+          </span>
+          <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500">
+            <span>Must be changed at first sign-in.</span>
+            <button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => {
+              const password = generateTemporaryPassword();
+              setForm((value) => ({ ...value, password, confirmPassword: password }));
+              setShowPassword(true);
+            }}>Generate strong password</button>
+          </span>
+        </Field>
+        <Field label="Confirm temporary password"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
+        {form.role === 'doctor' && <Field label="Department"><Select value={form.specialization} onChange={change('specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>}
+        {form.role === 'patient' && <>
+          <Field label="Date of birth"><Input type="date" max={localDateValue()} value={form.dateOfBirth} onChange={change('dateOfBirth')} required />{calculateAge(form.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(form.dateOfBirth)} years</span>}</Field>
+          <Field label="Sex"><Select value={form.sex} onChange={change('sex')}><option value="">Not specified</option>{['Female', 'Male', 'Intersex', 'Prefer not to say'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
+          <Field label="Blood group"><Select value={form.bloodGroup} onChange={change('bloodGroup')}><option value="">Not known</option>{bloodGroups.map((value) => <option key={value}>{value}</option>)}</Select></Field>
+          <Field label="Home address"><Textarea rows="2" maxLength="500" value={form.address} onChange={change('address')} /></Field>
+          <Field label="Emergency contact name"><Input maxLength="100" value={form.emergencyContact.name} onChange={changeEmergencyContact('name')} /></Field>
+          <Field label="Emergency contact relationship"><Input maxLength="50" value={form.emergencyContact.relationship} onChange={changeEmergencyContact('relationship')} /></Field>
+          <Field label="Emergency contact phone"><Input type="tel" maxLength="30" value={form.emergencyContact.phone} onChange={changeEmergencyContact('phone')} /></Field>
+          <Field label="Known allergies"><Input value={form.allergies} onChange={change('allergies')} placeholder="Separate entries with commas" /></Field>
+          <Field label="Ongoing conditions"><Input value={form.chronicConditions} onChange={change('chronicConditions')} placeholder="Separate entries with commas" /></Field>
+          <Field label="Current medications"><Input value={form.currentMedications} onChange={change('currentMedications')} placeholder="Separate entries with commas" /></Field>
+          <Field label="Height (cm)"><Input type="number" min="30" max="250" step="0.1" value={form.heightCm} onChange={change('heightCm')} /></Field>
+          <Field label="Weight (kg)"><Input type="number" min="1" max="500" step="0.1" value={form.weightKg} onChange={change('weightKg')} /></Field>
+        </>}
+        <button disabled={creating} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:col-span-2">{creating ? 'Creating account…' : 'Create account'}</button>
+      </form>
+      {credentials && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="created-account-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
+          <div className="grid min-h-full place-items-center">
+            <section className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6 dark:bg-slate-900">
+              <h2 id="created-account-title" className="text-lg font-bold">Account created</h2>
+              <p className="mt-2 text-sm text-slate-500">Credentials are shown once. Share them securely; the temporary password must be changed at first sign-in.</p>
+              <p className="mt-4 break-all text-sm"><strong>Login ID:</strong> {credentials.email}</p>
+              <p className="mt-1 break-all font-mono text-sm"><strong>Temporary password:</strong> {credentials.password}</p>
+              {credentials.uhid && <p className="mt-1 text-xs text-slate-500"><strong>UHID:</strong> {credentials.uhid}</p>}
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button ref={copyRef} type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700" onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(`Login ID: ${credentials.email}\nTemporary password: ${credentials.password}`);
+                    notify('Login ID and temporary password copied.');
+                  } catch {
+                    notify('Clipboard access is unavailable. Copy the credentials manually.', 'error');
+                  }
+                }}>Copy login ID + password</button>
+                <button type="button" className="rounded-lg bg-teal-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setCredentials(null)}>Done</button>
+              </div>
+            </section>
+          </div>
+        </div>,
+        document.body,
+      )}
     </Card>
   );
 }
@@ -584,52 +793,21 @@ function PageTitle({ eyebrow, title, description, icon: Icon }) {
 
 function PatientDashboard({ user, notify }) {
   const { data, loading, error, refresh } = useLoad(notify, [
-    { key: 'appointments', path: '/appointments' },
     { key: 'billing', path: '/billing' },
     { key: 'prescriptions', path: '/prescriptions' },
-    { key: 'vitals', path: '/vitals' },
-    { key: 'clinicalNotes', path: '/clinical-notes' },
   ]);
-  const appointments = data.appointments?.appointments || [];
   const bills = data.billing?.bills || [];
-  const totalBilledPaise = bills.reduce((total, bill) => total + (bill.status === 'Void' ? 0 : bill.totalPaise), 0);
   const prescriptions = data.prescriptions?.prescriptions || [];
-  const vitals = data.vitals?.vitals || [];
-  const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
-  const age = calculateAge(user.dateOfBirth);
 
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
-      <PageTitle eyebrow="Patient portal · read-only" title={`Hello, ${user.name}`} description="Review records and treatment information entered by your care team." icon={Activity} />
-      <Card title="Your profile" icon={ShieldCheck}>
-        <dl className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          {[['Unique Health ID', user.uhid], ['Age', age === null ? 'Not recorded' : `${age} years`], ['Date of birth', user.dateOfBirth ? formatDateOnly(user.dateOfBirth) : 'Not recorded'], ['Sex', user.sex || 'Not recorded'], ['Blood group', user.bloodGroup || 'Not recorded'], ['Height', user.heightCm ? `${user.heightCm} cm` : 'Not recorded'], ['Weight', user.weightKg ? `${user.weightKg} kg` : 'Not recorded'], ['Phone', user.phone || 'Not added'], ['Email', user.email], ['Address', user.address || 'Not recorded']].map(([label, value]) => <div key={label}><dt className="text-slate-500">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>)}
-        </dl>
-        <div className="mt-5 grid gap-4 border-t border-slate-100 pt-4 text-sm dark:border-slate-800 sm:grid-cols-2">
-          <div><p className="font-semibold">Allergies</p><p className="mt-1 text-slate-500">{user.allergies?.length ? user.allergies.join(', ') : 'None recorded'}</p></div>
-          <div><p className="font-semibold">Ongoing conditions</p><p className="mt-1 text-slate-500">{user.chronicConditions?.length ? user.chronicConditions.join(', ') : 'None recorded'}</p></div>
-          <div><p className="font-semibold">Current medications</p><p className="mt-1 text-slate-500">{user.currentMedications?.length ? user.currentMedications.join(', ') : 'None recorded'}</p></div>
-          <div><p className="font-semibold">Emergency contact</p><p className="mt-1 text-slate-500">{user.emergencyContact?.name ? `${user.emergencyContact.name} · ${user.emergencyContact.relationship || 'Contact'} · ${user.emergencyContact.phone || 'No phone'}` : 'Not recorded'}</p></div>
-        </div>
+      <PageTitle eyebrow="Patient portal · read-only" title={`Hello, ${user.name}`} description={`UHID: ${user.uhid || 'Not assigned'} · Your prescriptions and bills`} icon={Activity} />
+      <Card title="Prescriptions" icon={ClipboardList}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been added to your records.</Empty> : <div className="space-y-3">{prescriptions.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-semibold">{item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">Prescribed by {item.doctorId?.name || 'Doctor'} · {new Date(item.createdAt).toLocaleDateString()}</p><ul className="mt-3 space-y-2 text-sm">{item.medicines.map((medicine, index) => <li key={`${item._id}-${index}`}><span className="font-medium">{medicine.name}</span> · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.route && ` · ${medicine.route}`}{medicine.instructions && <span className="block text-xs text-slate-500">{medicine.instructions}</span>}</li>)}</ul>{item.instructions && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">Instructions: {item.instructions}</p>}{item.followUp && <p className="mt-2 text-xs font-medium text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.advice?.suggestions?.length > 0 && <p className="mt-2 text-sm"><span className="font-medium">Lifestyle advice:</span> {item.advice.suggestions.join(' · ')}</p>}{item.advice?.notes && <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">{item.advice.notes}</p>}</article>)}</div>}
       </Card>
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Your appointments" icon={CalendarDays}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty /> : <div className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <div key={item._id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0"><div><p className="font-medium">{item.department} <span className="ml-1 rounded-full bg-teal-50 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-950 dark:text-teal-300">{item.status}</span></p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p><p className="mt-1 text-xs text-slate-500">Doctor: {item.doctorId?.name || 'To be assigned'}</p><p className="mt-1 text-xs text-slate-500">Symptoms: {item.symptoms}</p></div></div>)}</div>}
-        </Card>
-        <Card title="Prescriptions" icon={ClipboardList}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been added to your records.</Empty> : <div className="space-y-3">{prescriptions.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-semibold">{item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">Prescribed by {item.doctorId?.name || 'Doctor'} · {new Date(item.createdAt).toLocaleDateString()}</p><ul className="mt-3 space-y-2 text-sm">{item.medicines.map((medicine, index) => <li key={`${item._id}-${index}`}><span className="font-medium">{medicine.name}</span> · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.route && ` · ${medicine.route}`}{medicine.instructions && <span className="block text-xs text-slate-500">{medicine.instructions}</span>}</li>)}</ul>{item.instructions && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">Instructions: {item.instructions}</p>}{item.followUp && <p className="mt-2 text-xs font-medium text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}</article>)}</div>}
-        </Card>
-        <Card title="Vital history" icon={Activity}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No measurements have been logged.</Empty> : <div className="space-y-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-xs">{item.notes}</p>}</div>)}</div>}
-        </Card>
-      </div>
       <Card title="Your bills" icon={Receipt}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><span className="font-medium">Total billed (excluding void bills)</span><span className="text-lg font-bold text-teal-700 dark:text-teal-300">{formatCurrency(totalBilledPaise)}</span></div>{bills.length === 0 ? <Empty>No bills have been issued.</Empty> : bills.map((bill) => <article key={bill._id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div><p className="font-semibold">{bill.description}</p><p className="mt-1 text-xs text-slate-500">{bill.invoiceNumber || 'Legacy invoice'} · {bill.status || 'Unpaid'} · Issued by {bill.createdBy?.name || 'Hospital administration'} · {new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></article>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">{bill.invoiceNumber || 'Legacy invoice'}</p><p className="mt-1 text-xs text-slate-500">{new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></div><ul className="mt-3 space-y-1 text-sm">{bill.lineItems?.length ? bill.lineItems.map((item, index) => <li key={`${bill._id}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{formatCurrency(item.amountPaise)}</span></li>) : <li>{bill.description}</li>}</ul>{bill.discountPaise > 0 && <p className="mt-2 text-sm">Discount: −{formatCurrency(bill.discountPaise)}</p>}<p className="mt-2 text-sm font-medium">Status: {bill.status || 'Unpaid'}{bill.paymentMethod && ` · ${bill.paymentMethod}`}</p></article>)}</div>}
       </Card>
-      <Card title="Doctor visit notes" icon={ClipboardList}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No visit notes have been added to your chart.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/60"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{note.assessment}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p>{note.historyOfPresentIllness && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">History:</span> {note.historyOfPresentIllness}</p>}{note.examination && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Examination:</span> {note.examination}</p>}<p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Care plan:</span> {note.plan}</p>{note.followUp && <p className="mt-2 text-xs text-teal-700 dark:text-teal-300"><span className="font-semibold">Follow-up:</span> {note.followUp}</p>}<p className="mt-3 text-xs text-slate-500">Dr. {note.doctorId?.name || 'Care team'}</p></article>)}</div>}
-      </Card>
-      <p className="text-center text-xs text-slate-500">Your medical records are read-only. Contact your care team if something needs correction.</p>
     </main>
   );
 }
@@ -637,25 +815,38 @@ function PatientDashboard({ user, notify }) {
 function DoctorDashboard({ user, notify }) {
   const [patientSearch, setPatientSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
-  const { data, loading, error, refresh } = useLoad(notify, [
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
-    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'prescriptions', path: '/prescriptions' },
     { key: 'vitals', path: '/vitals' },
     { key: 'clinicalNotes', path: '/clinical-notes' },
   ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const refreshing = fixedLoad.refreshing || patientLoad.refreshing;
+  const error = fixedLoad.error || patientLoad.error;
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
+  const refresh = useCallback(() => {
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
   const appointments = data.appointments?.appointments || [];
   const allPatients = data.patients?.patients || [];
-  const patients = filterPatientList(allPatients, patientSearch);
+  const patients = filterPatientList(allPatients, debouncedPatientSearch);
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
-  const emptyPrescription = { patientId: '', diagnosis: '', instructions: '', followUp: '', medicines: [{ name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] };
-  const emptyVital = { patientId: '', heartRate: '', systolic: '', diastolic: '', respiratoryRate: '', temperatureC: '', bloodGlucose: '', oxygenSaturation: '', heightCm: '', weightKg: '', notes: '' };
+  const emptyPrescription = { patientId: '', diagnosis: '', instructions: '', followUp: '', advice: { suggestions: [], notes: '' }, medicines: [{ name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] };
   const emptyClinicalNote = { patientId: '', chiefComplaint: '', historyOfPresentIllness: '', examination: '', assessment: '', plan: '', followUp: '' };
   const [prescription, setPrescription] = useState(emptyPrescription);
-  const [vital, setVital] = useState(emptyVital);
   const [clinicalNote, setClinicalNote] = useState(emptyClinicalNote);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const selectedPatientChecks = vitals.filter((record) => String(record.patientId?._id || record.patientId) === prescription.patientId);
   const [filter, setFilter] = useState('Scheduled');
   const [profilePatientId, setProfilePatientId] = useState('');
   const profilePatient = patients.find((item) => item._id === profilePatientId);
@@ -676,18 +867,10 @@ function DoctorDashboard({ user, notify }) {
         medicines: prescription.medicines,
         instructions: prescription.instructions,
         followUp: prescription.followUp,
+        advice: prescription.advice,
       });
       notify('Prescription saved to the patient record.');
       setPrescription(emptyPrescription);
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-  };
-  const saveVital = async (event) => {
-    event.preventDefault();
-    try {
-      await api.post('/vitals', vital);
-      notify('Vital record saved.');
-      setVital(emptyVital);
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
@@ -700,13 +883,6 @@ function DoctorDashboard({ user, notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
-  const editRecord = async (path, recordId, values) => {
-    try {
-      await api.put(`${path}/${recordId}`, values);
-      notify('Record updated.');
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-  };
   const deleteRecord = async (path, recordId, label) => {
     if (!window.confirm(`Delete this ${label}? This action is recorded in the audit log.`)) return;
     try {
@@ -715,23 +891,9 @@ function DoctorDashboard({ user, notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
-  const editClinicalNote = (note) => {
-    const assessment = window.prompt('Edit assessment', note.assessment);
-    if (assessment === null) return;
-    const plan = window.prompt('Edit care plan', note.plan);
-    if (plan === null) return;
-    void editRecord('/clinical-notes', note._id, { assessment, plan });
-  };
-  const editPrescription = (item) => {
-    const diagnosis = window.prompt('Edit diagnosis', item.diagnosis);
-    if (diagnosis === null) return;
-    void editRecord('/prescriptions', item._id, { diagnosis });
-  };
-  const editVital = (item) => {
-    const notes = window.prompt('Edit clinical notes', item.notes || '');
-    if (notes === null) return;
-    void editRecord('/vitals', item._id, { notes });
-  };
+  const editClinicalNote = (note) => setEditingRecord({ type: 'clinicalNote', record: note });
+  const editPrescription = (record) => setEditingRecord({ type: 'prescription', record });
+  const editVital = (record) => setEditingRecord({ type: 'vital', record });
   const updateAppointment = async (id, values) => {
     try {
       await api.put(`/appointments/${id}`, values);
@@ -744,6 +906,7 @@ function DoctorDashboard({ user, notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Doctor workspace" title={`Welcome, ${user.name}`} description={`${user.specialization || 'Clinical team'} · live appointments and patient records`} icon={Stethoscope} />
+      {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
@@ -777,16 +940,26 @@ function DoctorDashboard({ user, notify }) {
             <button type="button" disabled={prescription.medicines.length >= 30} onClick={() => setPrescription((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))} className="text-left text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2">+ Add another medicine</button>
             <Field label="Prescription instructions"><Textarea rows="2" maxLength="2000" value={prescription.instructions} onChange={change(setPrescription, 'instructions')} placeholder="Additional guidance for the patient" /></Field>
             <Field label="Prescription follow-up"><Input maxLength="500" value={prescription.followUp} onChange={change(setPrescription, 'followUp')} placeholder="e.g. Review in 2 weeks" /></Field>
+            <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+              <legend className="px-1 text-sm font-medium">Lifestyle advice</legend>
+              {prescriptionAdviceSuggestions.map((suggestion) => <label key={suggestion} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={prescription.advice.suggestions.includes(suggestion)} onChange={(event) => setPrescription((value) => ({ ...value, advice: { ...value.advice, suggestions: event.target.checked ? [...value.advice.suggestions, suggestion] : value.advice.suggestions.filter((item) => item !== suggestion) } }))} />{suggestion}</label>)}
+              <Field label="Other advice (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={prescription.advice.notes} onChange={(event) => setPrescription((value) => ({ ...value, advice: { ...value.advice, notes: event.target.value } }))} /></Field>
+            </fieldset>
             <button className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 sm:col-span-2">Save prescription</button>
           </form>
         </Card>
-        <Card title="Record patient vitals" icon={Activity}>
-          <form onSubmit={saveVital} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Patient"><Select required value={vital.patientId} onChange={change(setVital, 'patientId')}><option value="">Select a patient</option>{patients.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.uhid}</option>)}</Select></Field>
-            {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['respiratoryRate', 'Respiratory rate (/min)', '1', '100', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['bloodGlucose', 'Blood glucose (mg/dL)', '1', '2000', '1'], ['oxygenSaturation', 'Oxygen saturation (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={vital[key]} onChange={change(setVital, key)} /></Field>)}
-            <Field label="Clinical notes"><Textarea rows="2" maxLength="1000" value={vital.notes} onChange={change(setVital, 'notes')} /></Field>
-            <button className="rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 dark:text-teal-300 sm:col-span-2">Save vital record</button>
-          </form>
+        <Card title={`Preliminary checks · ${selectedPatientChecks.length}`} icon={Activity}>
+          {!prescription.patientId ? <Empty>Select a patient in the prescription form to view their checks.</Empty>
+            : selectedPatientChecks.length === 0 ? <Empty>No preliminary checks recorded for this patient.</Empty>
+              : <div className="max-h-[34rem] space-y-3 overflow-y-auto">{selectedPatientChecks.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800/60">
+                <p className="font-semibold">{patients.find((patient) => patient._id === prescription.patientId)?.name} · {new Date(item.createdAt).toLocaleString()}</p>
+                <p className="mt-1 text-xs text-slate-500">Recorded by {item.enteredBy?.name || item.recordedBy?.name || 'Medical staff'} ({item.enteredByRole || 'staff'})</p>
+                {item.editedBy?.name && <p className="mt-1 text-xs font-medium text-teal-700 dark:text-teal-300">Edited by Dr. {item.editedBy.name} · {item.editedAt ? new Date(item.editedAt).toLocaleString() : ''}</p>}
+                <p className="mt-2">{[['Heart rate', item.heartRate && `${item.heartRate} bpm`], ['Temperature', item.temperatureC && `${item.temperatureC} °C`], ['Blood pressure', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['SpO₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>
+                {item.symptoms?.length > 0 && <p className="mt-1"><strong>Symptoms:</strong> {item.symptoms.map((symptom) => symptom === 'Other' && item.symptomOther ? `Other: ${item.symptomOther}` : symptom).join(' · ')}</p>}
+                {item.notes && <p className="mt-1 whitespace-pre-wrap">{item.notes}</p>}
+                <button type="button" onClick={() => editVital(item)} className="mt-3 text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit check</button>
+              </article>)}</div>}
         </Card>
       </div>
       <Card title="Document a clinical visit" icon={ClipboardList}>
@@ -805,30 +978,208 @@ function DoctorDashboard({ user, notify }) {
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No clinical visit notes have been added.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="flex justify-between gap-2"><p className="font-semibold">{note.patientId?.name} · {note.patientId?.uhid}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p><p className="mt-1 text-sm"><span className="font-medium">Assessment:</span> {note.assessment}</p><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{note.plan}</p>{note.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editClinicalNote(note)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/clinical-notes', note._id, 'visit note')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</article>)}</div>}
       </Card>
       <Card title="Prescriptions authored" icon={ClipboardList}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been written yet.</Empty> : <div className="grid gap-3 md:grid-cols-2">{prescriptions.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">{item.medicines.map((medicine) => `${medicine.name} ${medicine.dosage} · ${medicine.frequency} · ${medicine.duration}`).join(', ')}</p>{item.instructions && <p className="mt-2 text-sm">{item.instructions}</p>}{item.followUp && <p className="mt-1 text-xs text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editPrescription(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/prescriptions', item._id, 'prescription')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been written yet.</Empty> : <div className="grid gap-3 md:grid-cols-2">{prescriptions.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">{item.medicines.map((medicine) => `${medicine.name} ${medicine.dosage} · ${medicine.frequency} · ${medicine.duration}`).join(', ')}</p>{item.instructions && <p className="mt-2 text-sm">{item.instructions}</p>}{item.followUp && <p className="mt-1 text-xs text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.advice?.suggestions?.length > 0 && <p className="mt-2 text-sm">Advice: {item.advice.suggestions.join(' · ')}</p>}{item.advice?.notes && <p className="mt-1 text-sm">{item.advice.notes}</p>}{item.doctorId?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editPrescription(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/prescriptions', item._id, 'prescription')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
       </Card>
       <Card title="Patient clinical records" icon={Activity}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No clinical measurements have been entered.</Empty> : <div className="grid gap-3 md:grid-cols-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-sm">{item.notes}</p>}{item.recordedBy?._id === user.id && <div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => editVital(item)} className="font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button type="button" onClick={() => deleteRecord('/vitals', item._id, 'vital record')} className="font-semibold text-rose-700 underline dark:text-rose-300">Delete</button></div>}</div>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No preliminary checks have been entered.</Empty> : <div className="grid gap-3 md:grid-cols-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">Recorded by {item.enteredBy?.name || item.recordedBy?.name || 'Medical staff'} ({item.enteredByRole || 'staff'})</p>{item.editedBy?.name && <p className="mt-1 text-xs font-medium text-teal-700 dark:text-teal-300">Edited by Dr. {item.editedBy.name}</p>}<p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.symptoms?.length > 0 && <p className="mt-1 text-sm">Symptoms: {item.symptoms.join(' · ')}{item.symptomOther && ` · ${item.symptomOther}`}</p>}{item.notes && <p className="mt-1 whitespace-pre-wrap text-sm">{item.notes}</p>}<button type="button" onClick={() => editVital(item)} className="mt-3 text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit check</button></div>)}</div>}
       </Card>
       <Card title="Patient-centered chart" icon={Activity}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : !profilePatient ? <Empty>Choose a patient above to view their complete recent chart.</Empty> : patientChart.length === 0 ? <Empty>No notes, prescriptions, or vitals are recorded for this patient.</Empty> : <div className="space-y-3">{patientChart.map(({ record, type }) => <article key={`${type}-${record._id}`} className="rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-700"><div className="flex justify-between gap-3"><strong>{type}</strong><time className="text-xs text-slate-500">{new Date(record.createdAt).toLocaleString()}</time></div><p className="mt-1">{type === 'Visit note' ? `${record.chiefComplaint} · ${record.assessment} · ${record.plan}` : type === 'Prescription' ? `${record.diagnosis} · ${record.medicines.map((medicine) => medicine.name).join(', ')}` : [['HR', record.heartRate], ['BP', record.systolic && record.diastolic ? `${record.systolic}/${record.diastolic}` : null], ['Temp °C', record.temperatureC], ['O₂ %', record.oxygenSaturation]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p></article>)}</div>}
       </Card>
+      {editingRecord && <RecordEditDialog editor={editingRecord} notify={notify} onClose={() => setEditingRecord(null)} onSaved={refresh} />}
     </main>
+  );
+}
+
+function RecordEditDialog({ editor, notify, onClose, onSaved }) {
+  const { type, record } = editor;
+  const [form, setForm] = useState(() => {
+    if (type === 'prescription') {
+      return {
+        diagnosis: record.diagnosis || '',
+        medicines: record.medicines.map((medicine) => ({ ...medicine })),
+        instructions: record.instructions || '',
+        followUp: record.followUp || '',
+        advice: { suggestions: record.advice?.suggestions || [], notes: record.advice?.notes || '' },
+      };
+    }
+    if (type === 'clinicalNote') {
+      return Object.fromEntries(['chiefComplaint', 'historyOfPresentIllness', 'examination', 'assessment', 'plan', 'followUp']
+        .map((field) => [field, record[field] || '']));
+    }
+    return {
+      ...Object.fromEntries([
+        'heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose',
+        'oxygenSaturation', 'heightCm', 'weightKg',
+      ].map((field) => [field, record[field] ?? ''])),
+      notes: record.notes || '',
+      symptoms: record.symptoms || [],
+      symptomOther: record.symptomOther || '',
+    };
+  });
+  const [saving, setSaving] = useState(false);
+  const setField = (field) => (event) => setForm((value) => ({ ...value, [field]: event.target.value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    try {
+      const path = type === 'clinicalNote' ? '/clinical-notes' : type === 'prescription' ? '/prescriptions' : '/vitals';
+      let payload = form;
+      if (type === 'vital') {
+        payload = Object.fromEntries(Object.entries(form).map(([field, value]) => [
+          field,
+          ['heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose', 'oxygenSaturation', 'heightCm', 'weightKg'].includes(field)
+            ? value === '' ? null : Number(value)
+            : value,
+        ]));
+        if (!form.symptoms.includes('Other')) payload.symptomOther = '';
+      }
+      await api.put(`${path}/${record._id}`, payload);
+      notify(type === 'vital' ? 'Preliminary check updated and audited.' : 'Record updated.');
+      onSaved();
+      onClose();
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const title = type === 'prescription' ? 'Edit prescription' : type === 'clinicalNote' ? 'Edit doctor’s note' : 'Edit preliminary check';
+
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-labelledby="edit-record-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
+      <div className="grid min-h-full place-items-center">
+        <section className="max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6 dark:bg-slate-900">
+          <h2 id="edit-record-title" className="text-lg font-bold">{title}</h2>
+          <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-2">
+            {type === 'clinicalNote' && <>
+              <Field label="Chief complaint"><Input required maxLength="1000" value={form.chiefComplaint} onChange={setField('chiefComplaint')} /></Field>
+              <Field label="History of present illness"><Textarea rows="3" maxLength="3000" value={form.historyOfPresentIllness} onChange={setField('historyOfPresentIllness')} /></Field>
+              <Field label="Examination findings"><Textarea rows="3" maxLength="3000" value={form.examination} onChange={setField('examination')} /></Field>
+              <Field label="Assessment / diagnosis"><Textarea required rows="2" maxLength="2000" value={form.assessment} onChange={setField('assessment')} /></Field>
+              <Field label="Care plan"><Textarea required rows="2" maxLength="3000" value={form.plan} onChange={setField('plan')} /></Field>
+              <Field label="Follow-up"><Input maxLength="1000" value={form.followUp} onChange={setField('followUp')} /></Field>
+            </>}
+            {type === 'prescription' && <>
+              <Field label="Diagnosis"><Input required maxLength="2000" value={form.diagnosis} onChange={setField('diagnosis')} /></Field>
+              {form.medicines.map((medicine, index) => <div key={index} className="grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2 sm:grid-cols-2">
+                {['name', 'dosage', 'frequency', 'duration', 'route', 'instructions'].map((field) => <Field key={field} label={`Medicine ${index + 1} ${field}`}><Input maxLength={field === 'instructions' ? 500 : field === 'route' ? 50 : 100} required={['name', 'dosage', 'frequency', 'duration'].includes(field)} value={medicine[field] || ''} onChange={(event) => setForm((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: event.target.value } : item) }))} /></Field>)}
+                {form.medicines.length > 1 && <button type="button" className="justify-self-start text-xs text-rose-600 underline sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: value.medicines.filter((_, itemIndex) => itemIndex !== index) }))}>Remove medicine</button>}
+              </div>)}
+              <button type="button" disabled={form.medicines.length >= 30} className="justify-self-start text-sm font-semibold text-teal-700 underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))}>Add medicine</button>
+              <Field label="Prescription instructions"><Textarea rows="2" maxLength="2000" value={form.instructions} onChange={setField('instructions')} /></Field>
+              <Field label="Prescription follow-up"><Input maxLength="500" value={form.followUp} onChange={setField('followUp')} /></Field>
+              <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+                <legend className="px-1 text-sm font-medium">Lifestyle advice</legend>
+                {prescriptionAdviceSuggestions.map((suggestion) => <label key={suggestion} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.advice.suggestions.includes(suggestion)} onChange={(event) => setForm((value) => ({ ...value, advice: { ...value.advice, suggestions: event.target.checked ? [...value.advice.suggestions, suggestion] : value.advice.suggestions.filter((item) => item !== suggestion) } }))} />{suggestion}</label>)}
+                <Field label="Other advice"><Textarea rows="3" maxLength="1000" value={form.advice.notes} onChange={(event) => setForm((value) => ({ ...value, advice: { ...value.advice, notes: event.target.value } }))} /></Field>
+              </fieldset>
+            </>}
+            {type === 'vital' && <>
+              {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['oxygenSaturation', 'SpO₂ (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1'], ['respiratoryRate', 'Respiratory rate (/min)', '1', '100', '1'], ['bloodGlucose', 'Blood glucose (mg/dL)', '1', '2000', '1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={form[key]} onChange={setField(key)} /></Field>)}
+              <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+                <legend className="px-1 text-sm font-medium">Symptoms</legend>
+                <Select multiple size={preliminaryCheckSymptoms.length} value={form.symptoms} onChange={(event) => setForm((value) => ({
+                  ...value,
+                  symptoms: Array.from(event.target.selectedOptions, (option) => option.value),
+                }))}>
+                  {preliminaryCheckSymptoms.map((symptom) => <option key={symptom}>{symptom}</option>)}
+                </Select>
+                {form.symptoms.includes('Other') && <Field label="Other symptom (max 200 characters)"><Input maxLength="200" value={form.symptomOther} onChange={setField('symptomOther')} /></Field>}
+              </fieldset>
+              <Field label="Note (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={form.notes} onChange={setField('notes')} /></Field>
+            </>}
+            <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">Cancel</button><button disabled={saving} className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save changes'}</button></div>
+          </form>
+        </section>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function PreliminaryCheckForm({ patients, notify, onSaved }) {
+  const [form, setForm] = useState({
+    patientId: '',
+    heartRate: '',
+    temperatureC: '',
+    systolic: '',
+    diastolic: '',
+    oxygenSaturation: '',
+    heightCm: '',
+    weightKg: '',
+    symptoms: [],
+    symptomOther: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.post('/vitals', {
+        ...form,
+        symptomOther: form.symptoms.includes('Other') ? form.symptomOther : '',
+      });
+      notify('Preliminary check recorded.');
+      setForm({
+        patientId: '', heartRate: '', temperatureC: '', systolic: '', diastolic: '',
+        oxygenSaturation: '', heightCm: '', weightKg: '', symptoms: [], symptomOther: '', notes: '',
+      });
+      onSaved();
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Card title="Preliminary check" icon={Activity}>
+      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Patient"><Select required value={form.patientId} onChange={change('patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+        {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['oxygenSaturation', 'SpO₂ (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={form[key]} onChange={change(key)} /></Field>)}
+        <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
+          <legend className="px-1 text-sm font-medium">Symptoms (select all that apply)</legend>
+          <Select multiple size={preliminaryCheckSymptoms.length} value={form.symptoms} onChange={(event) => setForm((value) => ({
+            ...value,
+            symptoms: Array.from(event.target.selectedOptions, (option) => option.value),
+          }))}>
+            {preliminaryCheckSymptoms.map((symptom) => <option key={symptom}>{symptom}</option>)}
+          </Select>
+          {form.symptoms.includes('Other') && <Field label="Describe other symptom (max 200 characters)"><Input maxLength="200" value={form.symptomOther} onChange={change('symptomOther')} required /></Field>}
+        </fieldset>
+        <Field label="Note (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={form.notes} onChange={change('notes')} /></Field>
+        <button disabled={saving || !patients.length} className="self-end rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save preliminary check'}</button>
+      </form>
+    </Card>
   );
 }
 
 function StaffDashboard({ notify }) {
   const [patientSearch, setPatientSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
-  const { data, loading, error, refresh: loadData } = useLoad(notify, [
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
     { key: 'appointments', path: '/appointments' },
-    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
     { key: 'doctors', path: '/doctors' },
     { key: 'beds', path: '/beds' },
+    { key: 'vitals', path: '/vitals' },
   ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const refreshing = fixedLoad.refreshing || patientLoad.refreshing;
+  const error = fixedLoad.error || patientLoad.error;
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
   const appointments = data.appointments?.appointments || [];
   const allPatients = data.patients?.patients || [];
-  const patients = filterPatientList(allPatients, patientSearch);
+  const patients = filterPatientList(allPatients, debouncedPatientSearch);
   const doctors = data.doctors?.doctors || [];
   const beds = data.beds?.beds || [];
   const [appointmentForm, setAppointmentForm] = useState({
@@ -837,8 +1188,9 @@ function StaffDashboard({ notify }) {
   const [assignment, setAssignment] = useState({});
   const refresh = useCallback(() => {
     setAssignment({});
-    loadData();
-  }, [loadData, setAssignment]);
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
   const bookAppointment = async (event) => {
     event.preventDefault();
@@ -867,9 +1219,11 @@ function StaffDashboard({ notify }) {
   const updateBed = async (bed, status, patientId) => {
     try {
       const nextStatus = status ?? (patientId ? 'Occupied' : 'Available');
+      if (bed.patientId && ['Available', 'Maintenance'].includes(nextStatus)
+        && !window.confirm(`Discharge ${bed.patientId.name} from bed ${bed.bedNumber}?`)) return;
       await api.put(`/beds/${bed._id}`, {
         status: nextStatus,
-        patientId: patientId ?? (nextStatus === 'Occupied' ? bed.patientId?._id : null),
+        patientId: nextStatus === 'Occupied' ? patientId ?? bed.patientId?._id : null,
       });
       notify('Bed assignment updated.');
       setAssignment((value) => {
@@ -884,10 +1238,12 @@ function StaffDashboard({ notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Medical staff workspace" title="Patient care coordination" description="Register patients, coordinate appointments, and manage bed assignments." icon={Stethoscope} />
+      {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
+      <PreliminaryCheckForm patients={patients} notify={notify} onSaved={refresh} />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Book an appointment" icon={CalendarDays}>
           <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
@@ -920,6 +1276,225 @@ function StaffDashboard({ notify }) {
   );
 }
 
+function ReceptionistDashboard({ notify }) {
+  const [patientSearch, setPatientSearch] = useState('');
+  const [patientPage, setPatientPage] = useState(1);
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
+    { key: 'appointments', path: '/appointments' },
+    { key: 'doctors', path: '/doctors' },
+    { key: 'billing', path: `/billing?page=1&limit=100&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const error = fixedLoad.error || patientLoad.error;
+  const appointments = data.appointments?.appointments || [];
+  const patients = data.patients?.patients || [];
+  const doctors = data.doctors?.doctors || [];
+  const bills = data.billing?.bills || [];
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
+  const refresh = useCallback(() => {
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
+  const [appointmentForm, setAppointmentForm] = useState({
+    patientId: '', doctorId: '', department: departments[0], date: '', time: '', symptoms: '', triage: 'OPD Routine',
+  });
+  const [reportPatientId, setReportPatientId] = useState('');
+  const [report, setReport] = useState({ loading: false, error: '', prescription: null });
+  const reportRequest = useRef(0);
+  const [billForm, setBillForm] = useState({
+    patientId: '',
+    lineItems: [{ description: 'Consultation fee', amount: '500' }],
+    discount: '',
+    notes: '',
+  });
+  const [creatingBill, setCreatingBill] = useState(false);
+  const [payingBill, setPayingBill] = useState(null);
+  const [paymentForm, setPaymentForm] = useState({ paymentMethod: 'Cash', paymentReference: '' });
+  const [savingPayment, setSavingPayment] = useState(false);
+  const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
+  const reportPatient = patients.find((patient) => patient._id === reportPatientId);
+  const subtotalPaise = billForm.lineItems.reduce((sum, item) => {
+    const amount = Number(item.amount);
+    return sum + (Number.isFinite(amount) ? Math.round(amount * 100) : 0);
+  }, 0);
+  const discountPaise = Number.isFinite(Number(billForm.discount)) ? Math.round(Number(billForm.discount || 0) * 100) : 0;
+
+  const chooseReportPatient = async (patientId) => {
+    setReportPatientId(patientId);
+    const requestId = reportRequest.current + 1;
+    reportRequest.current = requestId;
+    if (!patientId) {
+      setReport({ loading: false, error: '', prescription: null });
+      return;
+    }
+    setReport({ loading: true, error: '', prescription: null });
+    try {
+      const { data: result } = await api.get(`/prescriptions?patientId=${encodeURIComponent(patientId)}&limit=20`);
+      if (reportRequest.current === requestId) {
+        setReport({ loading: false, error: '', prescription: result.prescriptions?.[0] || null });
+      }
+    } catch (requestError) {
+      if (reportRequest.current === requestId) {
+        setReport({ loading: false, error: requestError.message, prescription: null });
+      }
+    }
+  };
+
+  const bookAppointment = async (event) => {
+    event.preventDefault();
+    try {
+      await api.post('/appointments', appointmentForm);
+      notify('Appointment booked.');
+      setAppointmentForm((value) => ({ ...value, symptoms: '', date: '', time: '' }));
+      refresh();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    }
+  };
+  const createBill = async (event) => {
+    event.preventDefault();
+    if (creatingBill) return;
+    setCreatingBill(true);
+    try {
+      await api.post('/billing', {
+        patientId: billForm.patientId,
+        lineItems: billForm.lineItems.map((item) => ({ ...item, amount: Number(item.amount) })),
+        discount: billForm.discount === '' ? undefined : Number(billForm.discount),
+        notes: billForm.notes,
+      });
+      notify('Bill issued. No payment has been processed.');
+      setBillForm({ patientId: '', lineItems: [{ description: 'Consultation fee', amount: '' }], discount: '', notes: '' });
+      refresh();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    } finally {
+      setCreatingBill(false);
+    }
+  };
+  const recordPayment = async (event) => {
+    event.preventDefault();
+    if (!payingBill || savingPayment) return;
+    setSavingPayment(true);
+    try {
+      await api.put(`/billing/${payingBill._id}`, { status: 'Paid', ...paymentForm });
+      notify(`Payment method recorded for ${payingBill.invoiceNumber}. This is a demo only.`);
+      setPayingBill(null);
+      setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' });
+      refreshFixed();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    } finally {
+      setSavingPayment(false);
+    }
+  };
+  const updateAppointment = async (id, values) => {
+    try {
+      await api.put(`/appointments/${id}`, values);
+      notify('Appointment updated.');
+      refreshFixed();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    }
+  };
+
+  return (
+    <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
+      <PageTitle eyebrow="Receptionist workspace" title="Patient services and billing" description="Register patients, book appointments, view doctor reports, and record simulated payments." icon={Receipt} />
+      <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
+      <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
+      <PatientRegistrationForm notify={notify} onCreated={refresh} />
+      <Card title="Book an appointment" icon={CalendarDays}>
+        <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
+          <Field label="Patient"><Select required value={appointmentForm.patientId} onChange={change(setAppointmentForm, 'patientId')}><option value="">Select patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+          <Field label="Department"><Select value={appointmentForm.department} onChange={(event) => setAppointmentForm((value) => ({ ...value, department: event.target.value, doctorId: '' }))}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
+          <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.filter((doctor) => doctor.specialization === appointmentForm.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></Field>
+          <Field label="Triage"><Select value={appointmentForm.triage} onChange={change(setAppointmentForm, 'triage')}>{triageLevels.map((item) => <option key={item}>{item}</option>)}</Select></Field>
+          <Field label="Appointment date"><Input type="date" min={localDateValue()} value={appointmentForm.date} onChange={change(setAppointmentForm, 'date')} required /></Field>
+          <Field label="One-hour slot"><Select value={appointmentForm.time} onChange={change(setAppointmentForm, 'time')} required><option value="">Select a time</option>{appointmentSlots.map((slot) => {
+            const isBooked = Boolean(appointmentForm.doctorId && appointmentForm.date && appointments.some((appointment) => (
+              appointment.doctorId?._id === appointmentForm.doctorId
+              && appointment.date.slice(0, 10) === appointmentForm.date
+              && appointment.time === slot.time
+              && appointment.status === 'Scheduled'
+            )));
+            return <option key={slot.time} value={slot.time} disabled={isBooked}>{isBooked ? `${slot.label} · booked` : slot.label}</option>;
+          })}</Select></Field>
+          <Field label="Symptoms"><Textarea rows="2" maxLength="2000" value={appointmentForm.symptoms} onChange={change(setAppointmentForm, 'symptoms')} required /></Field>
+          <button className="self-end rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white">Book visit</button>
+        </form>
+      </Card>
+      <Card title="Doctor's report" icon={ClipboardList}>
+        <Field label="Choose patient"><Select value={reportPatientId} onChange={(event) => chooseReportPatient(event.target.value)}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+        <div className="mt-4">
+          {report.loading ? <p className="text-sm text-slate-500">Loading latest prescription…</p>
+            : report.error ? <p role="alert" className="text-sm text-rose-700">{report.error}</p>
+              : !reportPatientId ? <Empty>Choose a patient to view the latest doctor report.</Empty>
+                : !report.prescription ? <Empty>No prescription is available for this patient.</Empty>
+                  : <article className="rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800/60">
+                    <p className="text-xs text-slate-500">{reportPatient?.name} · {reportPatient?.uhid} · {new Date(report.prescription.createdAt).toLocaleString()}</p>
+                    <p className="mt-2 font-semibold">Diagnosis: {report.prescription.diagnosis}</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">{report.prescription.medicines.map((medicine, index) => <li key={`${report.prescription._id}-${index}`}>{medicine.name} · {medicine.dosage} · {medicine.frequency} · {medicine.duration}</li>)}</ul>
+                    {report.prescription.advice?.suggestions?.length > 0 && <p className="mt-3"><strong>Lifestyle advice:</strong> {report.prescription.advice.suggestions.join(' · ')}</p>}
+                    {report.prescription.advice?.notes && <p className="mt-1 whitespace-pre-wrap">{report.prescription.advice.notes}</p>}
+                  </article>}
+        </div>
+      </Card>
+      <Card title="Create bill" icon={Receipt}>
+        <form onSubmit={createBill} className="grid gap-3">
+          <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+          <div className="grid gap-3">
+            {billForm.lineItems.map((item, index) => <div key={index} className="grid gap-3 sm:grid-cols-[1fr_12rem_auto]">
+              <Field label={`Line item ${index + 1} description`}><Input maxLength="250" required value={item.description} onChange={(event) => setBillForm((value) => ({ ...value, lineItems: value.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, description: event.target.value } : line) }))} /></Field>
+              <Field label="Amount (INR)"><Input type="number" min="0.01" max="100000000" step="0.01" required value={item.amount} onChange={(event) => setBillForm((value) => ({ ...value, lineItems: value.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, amount: event.target.value } : line) }))} /></Field>
+              <button type="button" disabled={billForm.lineItems.length <= 1} className="self-end rounded-lg border px-3 py-2 text-sm disabled:opacity-40" onClick={() => setBillForm((value) => ({ ...value, lineItems: value.lineItems.filter((_, lineIndex) => lineIndex !== index) }))}>Remove</button>
+            </div>)}
+          </div>
+          <button type="button" disabled={billForm.lineItems.length >= 50} className="justify-self-start text-sm font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => setBillForm((value) => ({ ...value, lineItems: [...value.lineItems, { description: '', amount: '' }] }))}>Add line item</button>
+          <Field label="Optional discount (INR)"><Input type="number" min="0" max="100000000" step="0.01" value={billForm.discount} onChange={change(setBillForm, 'discount')} /></Field>
+          <Field label="Notes"><Textarea rows="2" maxLength="1000" value={billForm.notes} onChange={change(setBillForm, 'notes')} /></Field>
+          <p className="font-semibold">Estimated total: {formatCurrency(Math.max(0, subtotalPaise - discountPaise))} <span className="text-xs font-normal text-slate-500">(server computes the saved total)</span></p>
+          <button disabled={creatingBill} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{creatingBill ? 'Issuing bill…' : 'Issue bill'}</button>
+        </form>
+      </Card>
+      <Card title="Bills and payment" icon={Receipt}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills match this search.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="rounded-xl border border-slate-200 p-4 text-sm dark:border-slate-700">
+          <div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{bill.invoiceNumber} · {bill.patientId?.name} · {bill.status}</p><p className="font-bold">{formatCurrency(bill.totalPaise)}</p></div>
+          <ul className="mt-2 space-y-1">{bill.lineItems?.length ? bill.lineItems.map((item, index) => <li key={`${bill._id}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{formatCurrency(item.amountPaise)}</span></li>) : <li>{bill.description}</li>}</ul>
+          {bill.discountPaise > 0 && <p className="mt-1">Discount: −{formatCurrency(bill.discountPaise)}</p>}
+          {bill.paymentMethod && <p className="mt-2">Payment: {bill.paymentMethod}{bill.paidAt ? ` · ${new Date(bill.paidAt).toLocaleString()}` : ''}</p>}
+          {bill.status === 'Unpaid' && <button type="button" className="mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
+        </article>)}</div>}
+      </Card>
+      <Card title={`Appointment queue · ${appointments.length}`} icon={CalendarDays}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3">{item.patientId?.name}</td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td>{item.doctorId?.name || 'Unassigned'}</td><td><Select aria-label={`Appointment status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</Select></td></tr>)}</tbody></table></div>}
+      </Card>
+      {payingBill && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="payment-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
+          <div className="grid min-h-full place-items-center">
+            <section className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6 dark:bg-slate-900">
+              <h2 id="payment-title" className="text-lg font-bold">Record simulated payment</h2>
+              <p className="mt-1 text-sm text-slate-500">{payingBill.invoiceNumber} · {formatCurrency(payingBill.totalPaise)}</p>
+              <form onSubmit={recordPayment} className="mt-4 grid gap-3">
+                <Field label="Payment method"><Select value={paymentForm.paymentMethod} onChange={change(setPaymentForm, 'paymentMethod')}>{paymentMethods.map((method) => <option key={method}>{method}</option>)}</Select></Field>
+                {paymentForm.paymentMethod === 'UPI QR' && <div className="grid justify-items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-center text-amber-950"><p className="font-bold">DEMO ONLY: no real money is moved</p><QRCodeSVG value={`CURASYS DEMO PAYMENT ${payingBill.invoiceNumber}`} size={180} level="M" /></div>}
+                <Field label="Optional reference text (no card, CVV, UPI, or bank details)"><Input maxLength="200" value={paymentForm.paymentReference} onChange={change(setPaymentForm, 'paymentReference')} /></Field>
+                <div className="flex justify-end gap-2"><button type="button" className="rounded-lg border px-4 py-2 text-sm" onClick={() => setPayingBill(null)}>Cancel</button><button disabled={savingPayment} className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingPayment ? 'Saving…' : 'Record payment'}</button></div>
+              </form>
+            </section>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </main>
+  );
+}
+
 function EditPatientDialog({ patient, notify, onClose, onSaved }) {
   const [form, setForm] = useState({
     name: patient.name || '',
@@ -945,9 +1520,9 @@ function EditPatientDialog({ patient, notify, onClose, onSaved }) {
       notify(error.message, 'error');
     }
   };
-  return (
-    <div role="dialog" aria-modal="true" aria-labelledby="edit-patient-title" className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4">
-      <section className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-labelledby="edit-patient-title" className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/60 p-4">
+      <section className="my-auto w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
         <h2 id="edit-patient-title" className="text-lg font-bold">Edit patient chart · {patient.uhid}</h2>
         <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Full name"><Input value={form.name} onChange={change('name')} maxLength="100" required /></Field>
@@ -959,25 +1534,38 @@ function EditPatientDialog({ patient, notify, onClose, onSaved }) {
           <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-700">Cancel</button><button className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Save changes</button></div>
         </form>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
 function AdminDashboard({ notify }) {
   const [patientSearch, setPatientSearch] = useState('');
+  const [accountSearch, setAccountSearch] = useState('');
   const [patientPage, setPatientPage] = useState(1);
-  const { data, loading, error, refresh: loadData } = useLoad(notify, [
-    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(patientSearch)}` },
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
     { key: 'beds', path: '/beds' },
     { key: 'billing', path: '/billing' },
     { key: 'appointments', path: '/appointments' },
     { key: 'administrators', path: '/admins' },
     { key: 'staff', path: '/staff' },
+    { key: 'receptionists', path: '/receptionists' },
     { key: 'doctors', path: '/doctors' },
     { key: 'audit', path: '/audit' },
+    { key: 'vitals', path: '/vitals' },
   ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const refreshing = fixedLoad.refreshing || patientLoad.refreshing;
+  const error = fixedLoad.error || patientLoad.error;
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
   const allPatients = data.patients?.patients || [];
-  const patients = filterPatientList(allPatients, patientSearch);
+  const patients = filterPatientList(allPatients, debouncedPatientSearch);
   const beds = data.beds?.beds || [];
   const totals = data.beds?.totals || [];
   const appointments = data.appointments?.appointments || [];
@@ -992,77 +1580,26 @@ function AdminDashboard({ notify }) {
     available: 0,
   });
   const staffMembers = data.staff?.staff || [];
-  const [adminForm, setAdminForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-  const [staffForm, setStaffForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-  const [doctorForm, setDoctorForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
+  const receptionists = data.receptionists?.receptionists || [];
+  const matchesAccountSearch = (account) => [account.name, account.email, account.phone]
+    .some((value) => value?.toLowerCase().includes(accountSearch.trim().toLowerCase()));
+  const visibleDoctors = doctors.filter(matchesAccountSearch);
+  const visibleStaff = staffMembers.filter(matchesAccountSearch);
+  const visibleReceptionists = receptionists.filter(matchesAccountSearch);
+  const visiblePatients = patients.filter(matchesAccountSearch);
   const [bedForm, setBedForm] = useState({ bedNumber: '', ward: wards[0] });
-  const [billForm, setBillForm] = useState(newBillForm);
-  const [creatingAdmin, setCreatingAdmin] = useState(false);
-  const [creatingStaff, setCreatingStaff] = useState(false);
-  const [creatingDoctor, setCreatingDoctor] = useState(false);
-  const [issuingBill, setIssuingBill] = useState(false);
   const [assignment, setAssignment] = useState({});
   const [editingPatient, setEditingPatient] = useState(null);
+  const loadData = useCallback(() => {
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
   const refresh = useCallback(() => {
     setAssignment({});
     loadData();
   }, [loadData, setAssignment]);
 
   const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
-  const createAdminAccount = async (event) => {
-    event.preventDefault();
-    if (creatingAdmin) return;
-    if (adminForm.password !== adminForm.confirmPassword) {
-      notify('The temporary passwords do not match.', 'error');
-      return;
-    }
-    setCreatingAdmin(true);
-    try {
-      const administratorData = { ...adminForm };
-      delete administratorData.confirmPassword;
-      const { data: result } = await api.post('/admins', administratorData);
-      notify(`Administrator account created for ${result.administrator.name}. They must change the temporary password at first sign-in.`);
-      setAdminForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setCreatingAdmin(false); }
-  };
-  const createStaffAccount = async (event) => {
-    event.preventDefault();
-    if (creatingStaff) return;
-    if (staffForm.password !== staffForm.confirmPassword) {
-      notify('The temporary passwords do not match.', 'error');
-      return;
-    }
-    setCreatingStaff(true);
-    try {
-      const staffData = { ...staffForm };
-      delete staffData.confirmPassword;
-      const { data: result } = await api.post('/staff', staffData);
-      notify(`Medical staff account created for ${result.staff.name}.`);
-      setStaffForm({ name: '', email: '', password: '', confirmPassword: '', phone: '' });
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setCreatingStaff(false); }
-  };
-  const createDoctorAccount = async (event) => {
-    event.preventDefault();
-    if (creatingDoctor) return;
-    if (doctorForm.password !== doctorForm.confirmPassword) {
-      notify('The temporary passwords do not match.', 'error');
-      return;
-    }
-    setCreatingDoctor(true);
-    try {
-      const doctorData = { ...doctorForm };
-      delete doctorData.confirmPassword;
-      const { data: result } = await api.post('/doctors', doctorData);
-      notify(`Doctor account created for ${result.doctor.name}. They must change the temporary password at first sign-in.`);
-      setDoctorForm({ name: '', email: '', password: '', confirmPassword: '', phone: '', specialization: departments[0] });
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setCreatingDoctor(false); }
-  };
   const updateDoctorDepartment = async (doctorId, specialization) => {
     try {
       await api.put(`/doctors/${doctorId}`, { specialization });
@@ -1082,21 +1619,6 @@ function AdminDashboard({ notify }) {
       refresh();
     } catch (error) { notify(error.message, 'error'); }
   };
-  const issueBill = async (event) => {
-    event.preventDefault();
-    if (issuingBill) return;
-    setIssuingBill(true);
-    try {
-      await api.post('/billing', {
-        ...billForm,
-        totalAmount: Number(billForm.totalAmount),
-      });
-      notify('Bill issued and added to the patient portal.');
-      setBillForm(newBillForm());
-      refresh();
-    } catch (error) { notify(error.message, 'error'); }
-    finally { setIssuingBill(false); }
-  };
   const updateBillStatus = async (bill, status) => {
     try {
       await api.put(`/billing/${bill._id}`, { status });
@@ -1107,7 +1629,12 @@ function AdminDashboard({ notify }) {
   const updateBed = async (bed, status, patientId) => {
     try {
       const nextStatus = status ?? (patientId ? 'Occupied' : 'Available');
-      await api.put(`/beds/${bed._id}`, { status: nextStatus, patientId: patientId ?? (nextStatus === 'Occupied' ? bed.patientId?._id : null) });
+      if (bed.patientId && ['Available', 'Maintenance'].includes(nextStatus)
+        && !window.confirm(`Discharge ${bed.patientId.name} from bed ${bed.bedNumber}?`)) return;
+      await api.put(`/beds/${bed._id}`, {
+        status: nextStatus,
+        patientId: nextStatus === 'Occupied' ? patientId ?? bed.patientId?._id : null,
+      });
       notify('Bed assignment updated.');
       setAssignment((value) => {
         const next = { ...value };
@@ -1159,56 +1686,28 @@ function AdminDashboard({ notify }) {
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Administration" title="Hospital command center" description="Register patients and manage beds using live MongoDB records." icon={ShieldCheck} />
+      {refreshing && <p role="status" className="text-xs text-slate-500">Refreshing…</p>}
       <LoadState loading={loading} error={error} onRetry={refresh} />
       <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory and pickers" /></Field>
+      <Field label="Search doctors, medical staff, receptionists, and patients"><Input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="Search account lists by name, email, or phone" /></Field>
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <div className="grid gap-3 sm:grid-cols-3">
         <Card title="Registered patients" icon={Users}><p className="text-3xl font-bold">{patients.length}</p><p className="mt-1 text-xs text-slate-500">Active patient charts</p></Card>
         <Card title="Appointments" icon={CalendarDays}><p className="text-3xl font-bold">{appointments.length}</p><p className="mt-1 text-xs text-slate-500">Scheduled and historical visits</p></Card>
-        <Card title="Care team" icon={Stethoscope}><p className="text-3xl font-bold">{staffMembers.length + (data.doctors?.doctors?.length || 0)}</p><p className="mt-1 text-xs text-slate-500">{staffMembers.length} medical staff · {data.doctors?.doctors?.length || 0} doctors</p></Card>
+        <Card title="Care team" icon={Stethoscope}><p className="text-3xl font-bold">{staffMembers.length + (data.doctors?.doctors?.length || 0) + receptionists.length}</p><p className="mt-1 text-xs text-slate-500">{staffMembers.length} medical staff · {data.doctors?.doctors?.length || 0} doctors · {receptionists.length} receptionists</p></Card>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {wardTotals.map((item) => <Card key={item._id} title={item._id} icon={BedDouble}><div className="flex items-end justify-between"><p className="text-3xl font-bold">{item.occupied}<span className="text-base font-medium text-slate-400"> / {item.total}</span></p><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">{item.available} available</span></div></Card>)}
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
-        <PatientRegistrationForm notify={notify} onCreated={refresh} />
+        <AdminAccountForm notify={notify} onCreated={refresh} />
         <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
+        <PreliminaryCheckForm patients={patients} notify={notify} onSaved={refresh} />
         <Card title={`Administrators · ${administrators.length}`} icon={ShieldCheck}>
           {administrators.length === 0 ? <Empty>No administrator accounts are registered.</Empty> : <div className="mb-4 space-y-2">{administrators.map((administrator) => <p key={administrator._id} className="rounded-xl bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800/60"><span className="font-semibold">{administrator.name}</span><span className="ml-2 text-slate-500">{administrator.email}</span></p>)}</div>}
-          <form onSubmit={createAdminAccount} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Full name"><Input autoComplete="name" maxLength="100" value={adminForm.name} onChange={change(setAdminForm, 'name')} required /></Field>
-            <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={adminForm.email} onChange={change(setAdminForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={adminForm.password} onChange={change(setAdminForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={adminForm.confirmPassword} onChange={change(setAdminForm, 'confirmPassword')} required /></Field>
-            <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={adminForm.phone} onChange={change(setAdminForm, 'phone')} /></Field>
-            <p className="text-xs text-slate-500 sm:col-span-2">Only an administrator can create another administrator. New administrators must change their temporary password at first sign-in.</p>
-            <button disabled={creatingAdmin} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingAdmin ? 'Creating administrator…' : 'Create administrator'}</button>
-          </form>
-        </Card>
-        <Card title="Create doctor account" icon={Stethoscope}>
-          <form onSubmit={createDoctorAccount} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Full name"><Input autoComplete="name" maxLength="100" value={doctorForm.name} onChange={change(setDoctorForm, 'name')} required /></Field>
-            <Field label="Email"><Input type="email" autoComplete="email" maxLength="254" value={doctorForm.email} onChange={change(setDoctorForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={doctorForm.password} onChange={change(setDoctorForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" maxLength="72" autoComplete="new-password" value={doctorForm.confirmPassword} onChange={change(setDoctorForm, 'confirmPassword')} required /></Field>
-            <Field label="Phone (optional)"><Input type="tel" maxLength="30" value={doctorForm.phone} onChange={change(setDoctorForm, 'phone')} /></Field>
-            <Field label="Department"><Select value={doctorForm.specialization} onChange={change(setDoctorForm, 'specialization')}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
-            <p className="text-xs text-slate-500 sm:col-span-2">Doctors change this temporary password on first sign-in. Only an administrator can create doctor accounts.</p>
-            <button disabled={creatingDoctor} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingDoctor ? 'Creating doctor login…' : 'Create doctor login'}</button>
-          </form>
-        </Card>
-        <Card title="Create medical staff account" icon={Stethoscope}>
-          <form onSubmit={createStaffAccount} className="grid gap-3 sm:grid-cols-2">
-            <Field label="Full name"><Input value={staffForm.name} onChange={change(setStaffForm, 'name')} required /></Field>
-            <Field label="Email"><Input type="email" value={staffForm.email} onChange={change(setStaffForm, 'email')} required /></Field>
-            <Field label="Temporary password"><Input type="password" minLength="8" value={staffForm.password} onChange={change(setStaffForm, 'password')} required /></Field>
-            <Field label="Confirm temporary password"><Input type="password" minLength="8" autoComplete="new-password" value={staffForm.confirmPassword} onChange={change(setStaffForm, 'confirmPassword')} required /></Field>
-            <Field label="Phone"><Input value={staffForm.phone} onChange={change(setStaffForm, 'phone')} /></Field>
-            <button disabled={creatingStaff} className="flex items-center justify-center gap-2 rounded-xl border border-teal-600 px-4 py-2.5 text-sm font-semibold text-teal-700 disabled:cursor-wait disabled:opacity-60 dark:text-teal-300 sm:col-span-2"><Plus className="h-4 w-4" />{creatingStaff ? 'Creating staff login…' : 'Create staff login'}</button>
-          </form>
         </Card>
         <Card title="Doctor departments" icon={Stethoscope}>
-          {doctors.length === 0 ? <Empty>No doctor accounts are registered.</Empty> : <div className="space-y-3">{doctors.map((doctor) => <Field key={doctor._id} label={doctor.name}><Select value={doctor.specialization} onChange={(event) => updateDoctorDepartment(doctor._id, event.target.value)}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>)}</div>}
+          {visibleDoctors.length === 0 ? <Empty>No doctor accounts match this search.</Empty> : <div className="space-y-3">{visibleDoctors.map((doctor) => <Field key={doctor._id} label={`${doctor.name} · ${doctor.email}`}><Select value={doctor.specialization} onChange={(event) => updateDoctorDepartment(doctor._id, event.target.value)}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>)}</div>}
         </Card>
         <Card title="Add a hospital bed" icon={BedDouble}>
           <form onSubmit={createBed} className="grid gap-3 sm:grid-cols-2">
@@ -1221,25 +1720,20 @@ function AdminDashboard({ notify }) {
       <Card title="Bed management" icon={BedDouble}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : beds.length === 0 ? <Empty>No beds are registered yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Bed</th><th scope="col" className="pb-3">Ward</th><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select aria-label={`Patient assigned to bed ${bed.bedNumber}`} value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select aria-label={`Status of bed ${bed.bedNumber}`} value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><div className="flex items-center gap-2"><button type="button" onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button><button type="button" onClick={() => deleteBed(bed._id)} className="text-xs text-rose-600 hover:underline">Remove</button></div></td></tr>)}</tbody></table></div>}
       </Card>
+      <Card title={`All bills · ${bills.length}`} icon={Receipt}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{bills.map((bill) => <article key={bill._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold">{bill.patientId?.name} · {bill.patientId?.uhid}</p><p className="font-bold text-teal-700 dark:text-teal-300">{formatCurrency(bill.totalPaise)}</p></div><p className="mt-1">{bill.invoiceNumber} · {bill.status}{bill.paymentMethod && ` · ${bill.paymentMethod}`}</p><p className="mt-1 text-xs text-slate-500">{bill.lineItems?.length ? bill.lineItems.map((item) => `${item.description}: ${formatCurrency(item.amountPaise)}`).join(' · ') : bill.description}</p>{bill.status === 'Unpaid' && <button type="button" onClick={() => updateBillStatus(bill, 'Void')} className="mt-2 text-xs font-semibold text-rose-700 underline dark:text-rose-300">Void bill (admin)</button>}</article>)}</div>}
+      </Card>
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Issue a patient bill" icon={Receipt}>
-          <form onSubmit={issueBill} className="grid gap-3">
-            <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
-            <Field label="Total amount (INR)"><Input type="number" min="0.01" max="100000000" step="0.01" required value={billForm.totalAmount} onChange={change(setBillForm, 'totalAmount')} /></Field>
-            <Field label="Bill description"><Textarea rows="2" maxLength="1000" required value={billForm.description} onChange={change(setBillForm, 'description')} /></Field>
-            <button disabled={issuingBill} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-wait disabled:opacity-60"><Receipt className="h-4 w-4" />{issuingBill ? 'Issuing bill…' : 'Issue bill'}</button>
-            <p className="text-xs text-slate-500">The standard consultation fee is ₹500 and can be changed before issuing. This default is only a form value; no bill is saved until you issue it. Patients can view issued bills in their read-only portal. After inactivity, the free API may need time to wake up. If a timeout occurs, refresh the dashboard and check the bills list before retrying.</p>
-          </form>
+        <Card title={`Doctors · ${visibleDoctors.length}`} icon={Stethoscope}>
+          {visibleDoctors.length === 0 ? <Empty>No doctors match this search.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{visibleDoctors.map((doctor) => <div key={doctor._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{doctor.name}</p><p className="text-xs text-slate-500">{doctor.email} · {doctor.specialization}</p></div>)}</div>}
         </Card>
-        <Card title={`Issued bills · ${bills.length}`} icon={Receipt}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{bills.map((bill) => <article key={bill._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold">{bill.patientId?.name} · {bill.patientId?.uhid}</p><p className="font-bold text-teal-700 dark:text-teal-300">{formatCurrency(bill.totalPaise)}</p></div><p className="mt-1">{bill.description}</p><p className="mt-1 text-xs text-slate-500">{bill.invoiceNumber || 'Legacy invoice'} · {bill.status || 'Unpaid'} · Issued {new Date(bill.createdAt).toLocaleString()}</p>{bill.status === 'Unpaid' && <div className="mt-2 flex gap-3 text-xs"><button type="button" onClick={() => updateBillStatus(bill, 'Paid')} className="font-semibold text-teal-700 underline dark:text-teal-300">Mark paid</button><button type="button" onClick={() => updateBillStatus(bill, 'Void')} className="font-semibold text-rose-700 underline dark:text-rose-300">Void bill</button></div>}</article>)}</div>}
+        <Card title={`Medical staff · ${visibleStaff.length}`} icon={Stethoscope}>
+          {visibleStaff.length === 0 ? <Empty>No medical staff match this search.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{visibleStaff.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.phone || 'No phone'}</span></div>)}</div>}
         </Card>
-      </div>
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title={`Medical staff · ${staffMembers.length}`} icon={Stethoscope}>
-          {staffMembers.length === 0 ? <Empty>No staff accounts have been created.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{staffMembers.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.phone || 'No phone'}</span></div>)}</div>}
+        <Card title={`Receptionists · ${visibleReceptionists.length}`} icon={Users}>
+          {visibleReceptionists.length === 0 ? <Empty>No receptionists match this search.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{visibleReceptionists.map((member) => <div key={member._id} className="flex justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{member.name}<span className="ml-2 block text-xs font-normal text-slate-500">{member.email}</span></span><span className="text-xs text-slate-500">{member.phone || 'No phone'}</span></div>)}</div>}
         </Card>
-        <Card title={`Patient directory · ${data.patients?.total ?? patients.length}`} icon={Users}>{loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : patients.length === 0 ? <Empty>No patients match this search.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{patients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><div className="flex gap-3"><button onClick={() => setEditingPatient(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button onClick={() => resetPatientPassword(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Reset password</button><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Deactivate</button></div></div>)}</div>}</Card>
+        <Card title={`Patient directory · ${data.patients?.total ?? patients.length}`} icon={Users}>{loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : visiblePatients.length === 0 ? <Empty>No patients match this search.</Empty> : <div className="max-h-96 space-y-2 overflow-auto">{visiblePatients.map((patient) => <div key={patient._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><span className="font-medium">{patient.name}<span className="ml-2 text-xs font-normal text-slate-500">{patient.uhid}</span><span className="mt-1 block text-xs font-normal text-slate-500">{patient.email} · {calculateAge(patient.dateOfBirth) ?? 'Age not recorded'}{calculateAge(patient.dateOfBirth) !== null ? ' years' : ''} · {patient.bloodGroup || 'Blood group unknown'}</span><span className="mt-1 block text-xs font-normal text-slate-600 dark:text-slate-300">Conditions: {patient.chronicConditions?.length ? patient.chronicConditions.join(', ') : 'None recorded'} · Allergies: {patient.allergies?.length ? patient.allergies.join(', ') : 'None recorded'}</span></span><div className="flex gap-3"><button onClick={() => setEditingPatient(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Edit</button><button onClick={() => resetPatientPassword(patient)} className="text-xs font-semibold text-teal-700 underline dark:text-teal-300">Reset password</button><button onClick={() => deletePatient(patient)} className="text-xs text-rose-600 hover:underline">Deactivate</button></div></div>)}</div>}</Card>
         <Card title={`Appointment overview · ${appointments.length}`} icon={CalendarDays}>{appointments.length === 0 ? <Empty>No appointments are booked.</Empty> : <div className="max-h-80 space-y-2 overflow-auto">{appointments.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{item.patientId?.name} · {item.department} · {item.status}</p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p></div>)}</div>}</Card>
       </div>
       <Card title="Audit log" icon={ShieldCheck}>

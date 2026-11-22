@@ -20,12 +20,16 @@ import Counter from './models/Counter.js';
 import Prescription from './models/Prescription.js';
 import User from './models/User.js';
 import Vital from './models/Vital.js';
+import { ensureUserIndexes } from './migrations/ensure-indexes.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from './validation.js';
 import {
   bloodGroups,
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  paymentMethods,
+  preliminaryCheckSymptoms,
+  prescriptionAdviceSuggestions,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -49,6 +53,13 @@ if (clinicStartHour >= clinicEndHour) {
   throw new Error('CLINIC_START_HOUR must be earlier than CLINIC_END_HOUR.');
 }
 
+export function validateAdminRegistrationKey() {
+  const key = process.env.ADMIN_REGISTRATION_KEY;
+  if (key && key.length < 32) {
+    throw new Error('ADMIN_REGISTRATION_KEY must be at least 32 characters when configured.');
+  }
+}
+
 const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -68,6 +79,7 @@ app.use(express.json({ limit: '64kb' }));
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
+  skipSuccessfulRequests: true,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   keyGenerator: (request) => `${ipKeyGenerator(request.ip)}:${String(request.body?.email || '').trim().toLowerCase()}`,
@@ -82,12 +94,11 @@ const registrationLimiter = rateLimit({
 });
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 300,
+  limit: 1000,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: { error: 'Too many requests. Try again in 15 minutes.' },
 });
-app.use('/api', apiLimiter);
 
 function publicUser(user) {
   return {
@@ -177,7 +188,7 @@ function asyncRoute(handler) {
 
 async function audit(request, {
   action, entityType, entityId = null, patientId = null, actorId = request.user?._id || null,
-  actorRole = request.user?.role || 'anonymous',
+  actorRole = request.user?.role || 'anonymous', note = '',
 }) {
   await AuditLog.create({
     actorId,
@@ -186,6 +197,7 @@ async function audit(request, {
     entityType,
     entityId,
     patientId,
+    note,
     ip: request.ip || '',
   });
 }
@@ -249,6 +261,20 @@ function validPassword(value) {
   if (typeof value !== 'string') return false;
   const byteLength = Buffer.byteLength(value, 'utf8');
   return byteLength >= 8 && byteLength <= 72;
+}
+
+function validPrescriptionAdvice(value) {
+  if (value === undefined) return true;
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Array.isArray(value.suggestions)
+    && value.suggestions.length <= prescriptionAdviceSuggestions.length
+    && value.suggestions.every((suggestion) => prescriptionAdviceSuggestions.includes(suggestion))
+    && new Set(value.suggestions).size === value.suggestions.length
+    && (value.notes === undefined || (typeof value.notes === 'string' && value.notes.length <= 1000)),
+  );
 }
 
 async function assignUhid() {
@@ -369,7 +395,19 @@ app.get('/api/health', asyncRoute(async (_request, response) => {
     response.status(503).json({ status: 'degraded' });
     return;
   }
-  response.json({ status: 'ok' });
+  response.json({ status: 'ok', database: 'connected' });
+}));
+
+app.use('/api', apiLimiter);
+
+async function isAdministratorSetupOpen() {
+  const hasAdministrator = await User.exists({ role: 'admin' });
+  return Boolean(process.env.ADMIN_REGISTRATION_KEY?.trim())
+    && (!hasAdministrator || process.env.ADMIN_SETUP_ENABLED === 'true');
+}
+
+app.get('/api/auth/setup-status', asyncRoute(async (_request, response) => {
+  response.json({ setupOpen: await isAdministratorSetupOpen() });
 }));
 
 app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, response) => {
@@ -388,36 +426,46 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
     response.status(403).json({ error: 'Only the project administrator can be registered through this one-time setup.' });
     return;
   }
+  const hasAdministrator = await User.exists({ role: 'admin' });
+  const bootstrap = !hasAdministrator;
+  if (!bootstrap && process.env.ADMIN_SETUP_ENABLED !== 'true') {
+    response.status(403).json({ error: 'Administrator setup is closed. Ask an existing administrator to create your account.' });
+    return;
+  }
   if (!process.env.ADMIN_REGISTRATION_KEY?.trim()) {
-    response.status(503).json({
-      error: 'Administrator setup is unavailable because ADMIN_REGISTRATION_KEY is missing from the API environment. Configure it on the Render API service and redeploy.',
-    });
+    response.status(503).json({ error: 'Administrator setup is unavailable.' });
     return;
   }
-  const expectedKey = Buffer.from(process.env.ADMIN_REGISTRATION_KEY, 'utf8');
-  const providedKey = Buffer.from(typeof adminRegistrationKey === 'string' ? adminRegistrationKey : '', 'utf8');
-  const validRegistrationKey = expectedKey.length > 0
-    && expectedKey.length === providedKey.length
-    && crypto.timingSafeEqual(expectedKey, providedKey);
+  const expectedKey = crypto.createHash('sha256').update(process.env.ADMIN_REGISTRATION_KEY, 'utf8').digest();
+  const providedKey = crypto.createHash('sha256')
+    .update(typeof adminRegistrationKey === 'string' ? adminRegistrationKey : '', 'utf8')
+    .digest();
+  const validRegistrationKey = crypto.timingSafeEqual(expectedKey, providedKey);
   if (!validRegistrationKey) {
-    response.status(403).json({ error: 'Admin registration requires the private ADMIN_REGISTRATION_KEY configured by the project owner.' });
+    response.status(403).json({ error: 'Administrator setup is unavailable.' });
     return;
   }
-  const isBootstrapAdmin = !(await User.exists({ role: 'admin' }));
   let user;
   try {
     user = await createUser({
       name, email, password, role, phone, specialization,
-      isBootstrapAdmin,
-      mustChangePassword: !isBootstrapAdmin,
+      isBootstrapAdmin: bootstrap,
+      mustChangePassword: false,
     });
   } catch (error) {
     if (error.code === 11000 && error.keyPattern?.isBootstrapAdmin) {
-      response.status(403).json({ error: 'Another administrator completed initial setup. Submit the registration form again to create an additional administrator.' });
+      response.status(403).json({ error: 'Administrator setup is closed. Ask an existing administrator to create your account.' });
       return;
     }
     throw error;
   }
+  await audit(request, {
+    action: 'admin.registered',
+    entityType: 'admin',
+    entityId: user._id,
+    actorRole: 'anonymous',
+    note: bootstrap ? 'bootstrap' : 'key-gated',
+  });
   response.status(201).json({ token: signToken(user), user: publicUser(user) });
 }));
 
@@ -478,6 +526,7 @@ app.post('/api/admins', authenticate, allow('admin'), asyncRoute(async (request,
     name, email, password, role: 'admin', phone,
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'admin.created', entityType: 'admin', entityId: administrator._id });
   response.status(201).json({ administrator: publicUser(administrator) });
 }));
 
@@ -504,9 +553,9 @@ app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, r
   response.json({ token: signToken(user), user: publicUser(user) });
 }));
 
-app.get('/api/doctors', authenticate, allow('staff', 'admin'), asyncRoute(async (_request, response) => {
+app.get('/api/doctors', authenticate, allow('staff', 'receptionist', 'admin'), asyncRoute(async (_request, response) => {
   const doctors = await User.find({ role: 'doctor', isActive: { $ne: false } })
-    .select('name specialization')
+    .select('name email phone specialization')
     .sort({ name: 1 })
     .lean();
   response.json({ doctors });
@@ -528,6 +577,7 @@ app.post('/api/doctors', authenticate, allow('admin'), asyncRoute(async (request
     name, email, password, phone, specialization, role: 'doctor',
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'doctor.created', entityType: 'doctor', entityId: doctor._id });
   response.status(201).json({ doctor: publicUser(doctor) });
 }));
 
@@ -553,10 +603,11 @@ app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (requ
     response.status(404).json({ error: 'Doctor not found.' });
     return;
   }
+  await audit(request, { action: 'doctor.department_changed', entityType: 'doctor', entityId: doctor._id });
   response.json({ doctor: publicUser(doctor) });
 }));
 
-app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = { role: 'patient', isActive: { $ne: false } };
@@ -565,7 +616,7 @@ app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncR
     const pattern = escapedRegex(pagination.q);
     filter.$or = [{ name: pattern }, { uhid: pattern }, { email: pattern }];
   }
-  const patientFields = request.user.role === 'staff'
+  const patientFields = ['staff', 'receptionist'].includes(request.user.role)
     ? 'name email uhid phone'
     : 'name email uhid phone dateOfBirth sex bloodGroup address emergencyContact allergies chronicConditions currentMedications heightCm weightKg';
   const { items, total, page } = await listPage(User, filter, pagination, {
@@ -573,7 +624,7 @@ app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncR
     select: patientFields,
   });
   const patients = items;
-  if (request.user.role === 'doctor' || request.user.role === 'staff') {
+  if (request.user.role === 'doctor' || request.user.role === 'staff' || request.user.role === 'receptionist') {
     await audit(request, { action: 'patients.listed', entityType: 'patient' });
   }
   response.json({ patients, items: patients, total, page });
@@ -599,7 +650,7 @@ app.get('/api/audit', authenticate, allow('admin'), asyncRoute(async (request, r
   response.json({ items, total, page });
 }));
 
-app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const {
     name, email, password, phone, dateOfBirth, sex, bloodGroup, address, emergencyContact,
     allergies, chronicConditions, currentMedications, heightCm, weightKg,
@@ -659,7 +710,35 @@ app.post('/api/staff', authenticate, allow('admin'), asyncRoute(async (request, 
     name, email, password, role: 'staff', phone,
     registeredBy: request.user.id, mustChangePassword: true,
   });
+  await audit(request, { action: 'staff.created', entityType: 'staff', entityId: staff._id });
   response.status(201).json({ staff: publicUser(staff) });
+}));
+
+app.get('/api/receptionists', authenticate, allow('admin'), asyncRoute(async (_request, response) => {
+  const receptionists = await User.find({ role: 'receptionist', isActive: { $ne: false } })
+    .select('name email phone')
+    .sort({ name: 1 })
+    .lean();
+  response.json({ receptionists });
+}));
+
+app.post('/api/receptionists', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  const { name, email, password, phone } = request.body ?? {};
+  if (
+    typeof name !== 'string' || !name.trim() || name.trim().length > 100
+    || typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    || !validPassword(password)
+    || !isOptionalPhone(phone)
+  ) {
+    response.status(400).json({ error: 'Enter a name, valid email, and password with at least 8 characters.' });
+    return;
+  }
+  const receptionist = await createUser({
+    name, email, password, role: 'receptionist', phone,
+    registeredBy: request.user.id, mustChangePassword: true,
+  });
+  await audit(request, { action: 'receptionist.created', entityType: 'receptionist', entityId: receptionist._id });
+  response.status(201).json({ receptionist: publicUser(receptionist) });
 }));
 
 app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) => {
@@ -774,7 +853,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
   response.json({ success: true });
 }));
 
-app.get('/api/appointments', authenticate, asyncRoute(async (request, response) => {
+app.get('/api/appointments', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient'
@@ -790,7 +869,7 @@ app.get('/api/appointments', authenticate, asyncRoute(async (request, response) 
   response.json({ appointments: result.items, ...result });
 }));
 
-app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/appointments', authenticate, allow('staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const { doctorId, department, date, time, symptoms, triage } = request.body ?? {};
   const patientId = request.body?.patientId;
   if (
@@ -838,7 +917,7 @@ app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(
   response.status(201).json({ appointment });
 }));
 
-app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const { status, triage, doctorId } = request.body ?? {};
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid appointment ID.' });
@@ -915,7 +994,7 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'admin')
   response.json({ appointment });
 }));
 
-app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff'), asyncRoute(async (request, response) => {
+app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff', 'receptionist'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid appointment ID.' });
     return;
@@ -969,7 +1048,10 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
     }
     update.status = status;
   }
-  if (patientId !== undefined) {
+  const isDischarge = status === 'Available' || status === 'Maintenance';
+  if (isDischarge) {
+    update.patientId = null;
+  } else if (patientId !== undefined) {
     if (patientId && (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } }))) {
       response.status(400).json({ error: 'Choose a valid patient.' });
       return;
@@ -1017,10 +1099,20 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
     response.status(409).json({ error: 'This patient is already assigned to another occupied bed.' });
     return;
   }
-  if (update.status === 'Available' || update.status === 'Maintenance') update.patientId = null;
-  const bed = await Bed.findByIdAndUpdate(request.params.id, update, { returnDocument: 'after', runValidators: true })
+  const bedFilter = { _id: request.params.id };
+  if (update.status === 'Occupied' && assignedPatient) {
+    bedFilter.$or = [
+      { status: { $ne: 'Occupied' } },
+      { patientId: assignedPatient },
+    ];
+  }
+  const bed = await Bed.findOneAndUpdate(bedFilter, update, { returnDocument: 'after', runValidators: true })
     .populate('patientId', 'name uhid');
   if (!bed) {
+    if (await Bed.exists({ _id: request.params.id })) {
+      response.status(409).json({ error: 'Discharge the current patient first.' });
+      return;
+    }
     response.status(404).json({ error: 'Bed not found.' });
     return;
   }
@@ -1045,7 +1137,7 @@ app.delete('/api/beds/:id', authenticate, allow('admin'), asyncRoute(async (requ
   response.json({ success: true });
 }));
 
-app.get('/api/billing', authenticate, allow('patient', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/billing', authenticate, allow('patient', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient' ? { patientId: request.user.id } : {};
@@ -1053,43 +1145,75 @@ app.get('/api/billing', authenticate, allow('patient', 'admin'), asyncRoute(asyn
   const result = await listPage(Billing, filter, pagination, {
     sort: { createdAt: -1 },
     populate: [['patientId', 'name uhid'], ['createdBy', 'name']],
+    select: request.user.role === 'patient'
+      ? 'invoiceNumber totalPaise lineItems discountPaise status paymentMethod createdAt'
+      : undefined,
   });
   response.json({ bills: result.items, ...result });
 }));
 
-app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request, response) => {
-  const { patientId, totalAmount, description } = request.body ?? {};
-  const totalPaise = typeof totalAmount === 'number' ? Math.round(totalAmount * 100) : NaN;
+app.post('/api/billing', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
+  const { patientId, lineItems, discount, notes } = request.body ?? {};
+  const validAmount = (value) => typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 100_000_000
+    && Math.abs(value * 100 - Math.round(value * 100)) <= 1e-7;
+  const itemAmounts = Array.isArray(lineItems)
+    ? lineItems.map((item) => validAmount(item?.amount) ? Math.round(item.amount * 100) : NaN)
+    : [];
+  const subtotalPaise = itemAmounts.reduce((total, amount) => total + amount, 0);
+  const discountPaise = discount === undefined || discount === '' ? 0
+    : validAmount(discount) ? Math.round(discount * 100) : NaN;
+  const totalPaise = subtotalPaise - discountPaise;
   if (
     !validObjectId(patientId)
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
-    || typeof totalAmount !== 'number'
-    || !Number.isFinite(totalAmount)
-    || totalAmount <= 0
-    || totalAmount > 100_000_000
-    || Math.abs(totalAmount * 100 - totalPaise) > 1e-7
+    || !Array.isArray(lineItems) || lineItems.length < 1 || lineItems.length > 50
+    || lineItems.some((item) => !item || typeof item !== 'object'
+      || typeof item.description !== 'string' || !item.description.trim() || item.description.length > 250)
+    || itemAmounts.some((amount) => !Number.isSafeInteger(amount) || amount < 1)
+    || !Number.isFinite(discountPaise) || discountPaise < 0 || discountPaise >= subtotalPaise
     || !Number.isSafeInteger(totalPaise)
-    || typeof description !== 'string'
-    || !description.trim()
-    || description.trim().length > 1000
+    || totalPaise < 1 || totalPaise > 10_000_000_000
+    || (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000))
   ) {
-    response.status(400).json({ error: 'Select a patient and enter a valid total bill and description.' });
+    response.status(400).json({ error: 'Select a patient and enter valid line items, discount, and notes.' });
     return;
   }
   const bill = await Billing.create({
     patientId,
     createdBy: request.user.id,
     totalPaise,
-    description: description.trim(),
+    description: lineItems.map(({ description: itemDescription }) => itemDescription.trim()).join(', ').slice(0, 1000),
+    lineItems: lineItems.map((item, index) => ({
+      description: item.description.trim(),
+      amountPaise: itemAmounts[index],
+    })),
+    discountPaise,
+    notes: notes || '',
     invoiceNumber: await nextInvoiceNumber(),
   });
   await audit(request, { action: 'billing.issued', entityType: 'billing', entityId: bill._id, patientId });
   response.status(201).json({ bill });
 }));
 
-app.put('/api/billing/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
-  if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(request.body?.status)) {
+app.put('/api/billing/:id', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
+  const { status, paymentMethod, paymentReference = '' } = request.body ?? {};
+  if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(status)) {
     response.status(400).json({ error: 'Choose a valid bill and status.' });
+    return;
+  }
+  if (status === 'Void' && request.user.role !== 'admin') {
+    response.status(403).json({ error: 'Only administrators can void bills.' });
+    return;
+  }
+  if (status === 'Paid' && (
+    !paymentMethods.includes(paymentMethod)
+    || typeof paymentReference !== 'string'
+    || paymentReference.length > 200
+  )) {
+    response.status(400).json({ error: 'Choose a valid payment method and optional reference.' });
     return;
   }
   const bill = await Billing.findById(request.params.id);
@@ -1101,21 +1225,40 @@ app.put('/api/billing/:id', authenticate, allow('admin'), asyncRoute(async (requ
     response.status(409).json({ error: 'Only unpaid bills can be marked paid or voided.' });
     return;
   }
-  bill.status = request.body.status;
-  bill.paidAt = request.body.status === 'Paid' ? new Date() : null;
+  bill.status = status;
+  bill.paidAt = status === 'Paid' ? new Date() : null;
+  if (status === 'Paid') {
+    bill.paymentMethod = paymentMethod;
+    bill.paymentReference = paymentReference.trim();
+    bill.paidBy = request.user.id;
+  }
   await bill.save();
   await audit(request, { action: `billing.${bill.status.toLowerCase()}`, entityType: 'billing', entityId: bill._id, patientId: bill.patientId });
   response.json({ bill });
 }));
 
-app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
+  if (request.user.role === 'receptionist' && !validObjectId(request.query.patientId)) {
+    response.status(400).json({ error: 'Choose a patient to view their doctor report.' });
+    return;
+  }
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
       ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
-      : {};
+      : request.user.role === 'receptionist'
+        ? { patientId: request.query.patientId }
+        : {};
+  if (request.user.role === 'receptionist' && !await User.exists({
+    _id: request.query.patientId,
+    role: 'patient',
+    isActive: { $ne: false },
+  })) {
+    response.status(404).json({ error: 'Patient not found.' });
+    return;
+  }
   await addPatientSearch(filter, pagination.q);
   const result = await listPage(Prescription, filter, pagination, {
     sort: { createdAt: -1 },
@@ -1124,7 +1267,7 @@ app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'),
   response.json({ prescriptions: result.items, ...result });
 }));
 
-app.get('/api/clinical-notes', authenticate, allow('patient', 'doctor'), asyncRoute(async (request, response) => {
+app.get('/api/clinical-notes', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient'
@@ -1228,7 +1371,7 @@ app.delete('/api/clinical-notes/:id', authenticate, allow('doctor'), asyncRoute(
 }));
 
 app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
-  const { patientId, diagnosis, medicines, instructions, followUp } = request.body ?? {};
+  const { patientId, diagnosis, medicines, instructions, followUp, advice } = request.body ?? {};
   if (
     !validObjectId(patientId)
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
@@ -1240,6 +1383,7 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
       || ['route', 'instructions'].some((field) => medicine[field] !== undefined && (typeof medicine[field] !== 'string' || medicine[field].length > (field === 'route' ? 50 : 500))))
     || (instructions !== undefined && (typeof instructions !== 'string' || instructions.length > 2000))
     || (followUp !== undefined && (typeof followUp !== 'string' || followUp.length > 500))
+    || !validPrescriptionAdvice(advice)
   ) {
     response.status(400).json({ error: 'Select a patient and provide a diagnosis and at least one complete medicine.' });
     return;
@@ -1251,6 +1395,7 @@ app.post('/api/prescriptions', authenticate, allow('doctor'), asyncRoute(async (
     medicines,
     instructions,
     followUp,
+    advice,
   });
   await audit(request, { action: 'prescription.created', entityType: 'prescription', entityId: prescription._id, patientId });
   response.status(201).json({ prescription });
@@ -1262,7 +1407,7 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(asyn
     return;
   }
   const filter = { _id: request.params.id, doctorId: request.user.id };
-  const { diagnosis, medicines, instructions, followUp } = request.body ?? {};
+  const { diagnosis, medicines, instructions, followUp, advice } = request.body ?? {};
   const update = {};
   if (typeof diagnosis === 'string' && diagnosis.trim()) update.diagnosis = diagnosis.trim();
   if (Array.isArray(medicines) && medicines.length > 0 && medicines.length <= 30
@@ -1273,6 +1418,11 @@ app.put('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(asyn
   }
   if (typeof instructions === 'string' && instructions.length <= 2000) update.instructions = instructions;
   if (typeof followUp === 'string' && followUp.length <= 500) update.followUp = followUp;
+  if (advice !== undefined && validPrescriptionAdvice(advice)) update.advice = advice;
+  if (advice !== undefined && !validPrescriptionAdvice(advice)) {
+    response.status(400).json({ error: 'Choose only the listed lifestyle suggestions and provide notes up to 1000 characters.' });
+    return;
+  }
   if (!Object.keys(update).length) {
     response.status(400).json({ error: 'Provide a diagnosis or medicines to update.' });
     return;
@@ -1310,49 +1460,70 @@ app.delete('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(a
   response.json({ success: true });
 }));
 
-app.get('/api/vitals', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/vitals', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
-  const filter = request.user.role === 'patient'
-    ? { patientId: request.user.id }
-    : request.user.role === 'doctor'
-      ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
-      : {};
+  const filter = request.user.role === 'doctor'
+    ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
+    : {};
   await addPatientSearch(filter, pagination.q);
   const result = await listPage(Vital, filter, pagination, {
     sort: { createdAt: -1 },
-    populate: [['patientId', 'name uhid'], ['recordedBy', 'name role']],
+    populate: [['patientId', 'name uhid'], ['recordedBy', 'name role'], ['enteredBy', 'name role'], ['editedBy', 'name']],
   });
   response.json({ vitals: result.items, ...result });
 }));
 
-app.post('/api/vitals', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
+app.post('/api/vitals', authenticate, allow('staff', 'admin'), asyncRoute(async (request, response) => {
   const {
-    patientId, heartRate, systolic, diastolic, respiratoryRate, temperatureC,
-    bloodGlucose, oxygenSaturation, heightCm, weightKg, notes,
+    patientId, heartRate, systolic, diastolic, temperatureC, oxygenSaturation,
+    heightCm, weightKg, symptoms, symptomOther, notes,
   } = request.body ?? {};
-  const targetPatientId = patientId;
-  if (
-    !validObjectId(targetPatientId)
-    || !await User.exists({ _id: targetPatientId, role: 'patient', isActive: { $ne: false } })
-    || !await doctorCanAccessPatient(request.user.id, targetPatientId)
-  ) {
+  const ranges = {
+    heartRate: [20, 300],
+    systolic: [40, 300],
+    diastolic: [20, 200],
+    temperatureC: [25, 45],
+    oxygenSaturation: [1, 100],
+    heightCm: [30, 250],
+    weightKg: [1, 500],
+  };
+  const hasInvalidMeasurement = Object.entries(ranges).some(([field, [min, max]]) => {
+    const value = request.body?.[field];
+    return value !== undefined && value !== null && value !== ''
+      && (!Number.isFinite(Number(value)) || Number(value) < min || Number(value) > max);
+  });
+  if (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })) {
     response.status(400).json({ error: 'Choose a valid patient.' });
     return;
   }
-  const values = { heartRate, systolic, diastolic, respiratoryRate, temperatureC, bloodGlucose, oxygenSaturation, heightCm, weightKg };
+  const values = { heartRate, systolic, diastolic, temperatureC, oxygenSaturation, heightCm, weightKg };
   const hasVital = Object.values(values).some((value) => value !== undefined && value !== null && value !== '');
-  if (!hasVital || (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000))) {
-    response.status(400).json({ error: 'Enter at least one vital measurement and valid notes.' });
+  if (
+    !hasVital || hasInvalidMeasurement
+    || !Array.isArray(symptoms) || symptoms.length < 1
+    || symptoms.some((symptom) => !preliminaryCheckSymptoms.includes(symptom))
+    || new Set(symptoms).size !== symptoms.length
+    || (symptoms.includes('Other') && (typeof symptomOther !== 'string' || !symptomOther.trim() || symptomOther.length > 200))
+    || (!symptoms.includes('Other') && symptomOther !== undefined && symptomOther !== '')
+    || (systolic !== undefined && systolic !== '' && (diastolic === undefined || diastolic === ''))
+    || (diastolic !== undefined && diastolic !== '' && (systolic === undefined || systolic === ''))
+    || (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000))
+  ) {
+    response.status(400).json({ error: 'Enter valid measurements, select allowed symptoms, and provide Other details when selected.' });
     return;
   }
   const vital = await Vital.create({
-    patientId: targetPatientId,
+    patientId,
     recordedBy: request.user.id,
+    enteredBy: request.user.id,
+    enteredByRole: request.user.role,
+    symptoms,
+    symptomOther: symptomOther || '',
     ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value === '' ? null : value])),
     notes: notes || '',
   });
-  await audit(request, { action: 'vital.created', entityType: 'vital', entityId: vital._id, patientId: targetPatientId });
+  await audit(request, { action: 'vital.created', entityType: 'vital', entityId: vital._id, patientId });
   response.status(201).json({ vital });
 }));
 
@@ -1361,21 +1532,73 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
     response.status(400).json({ error: 'Invalid vital record ID.' });
     return;
   }
-  const fields = ['heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose', 'oxygenSaturation', 'heightCm', 'weightKg', 'notes'];
+  const vital = await Vital.findById(request.params.id);
+  if (!vital) {
+    response.status(404).json({ error: 'Vital record not found.' });
+    return;
+  }
+  if (!await doctorCanAccessPatient(request.user.id, vital.patientId)) {
+    response.status(404).json({ error: 'Vital record not found.' });
+    return;
+  }
+  const fields = [
+    'heartRate', 'systolic', 'diastolic', 'respiratoryRate', 'temperatureC', 'bloodGlucose',
+    'oxygenSaturation', 'heightCm', 'weightKg', 'notes', 'symptoms', 'symptomOther',
+  ];
   const update = Object.fromEntries(fields.filter((field) => request.body?.[field] !== undefined).map((field) => [field, request.body[field]]));
   if (!Object.keys(update).length) {
     response.status(400).json({ error: 'Provide at least one vital value to update.' });
     return;
   }
-  const vital = await Vital.findOneAndUpdate(
-    { _id: request.params.id, recordedBy: request.user.id },
-    update,
-    { returnDocument: 'after', runValidators: true },
-  );
-  if (!vital) {
-    response.status(404).json({ error: 'Vital record not found.' });
+  if (
+    (update.symptoms !== undefined && (
+      !Array.isArray(update.symptoms)
+      || update.symptoms.some((symptom) => !preliminaryCheckSymptoms.includes(symptom))
+      || new Set(update.symptoms).size !== update.symptoms.length
+    ))
+    || (update.symptomOther !== undefined && (typeof update.symptomOther !== 'string' || update.symptomOther.length > 200))
+    || (update.notes !== undefined && (typeof update.notes !== 'string' || update.notes.length > 1000))
+  ) {
+    response.status(400).json({ error: 'Provide only allowed symptoms and text within the field limits.' });
     return;
   }
+  const measurementRanges = {
+    heartRate: [20, 300],
+    systolic: [40, 300],
+    diastolic: [20, 200],
+    respiratoryRate: [1, 100],
+    temperatureC: [25, 45],
+    bloodGlucose: [1, 2000],
+    oxygenSaturation: [1, 100],
+    heightCm: [30, 250],
+    weightKg: [1, 500],
+  };
+  const hasInvalidMeasurement = Object.entries(measurementRanges).some(([field, [min, max]]) => {
+    const value = update[field];
+    return value !== undefined && value !== null && value !== ''
+      && (!Number.isFinite(Number(value)) || Number(value) < min || Number(value) > max);
+  });
+  const nextSymptoms = update.symptoms ?? vital.symptoms;
+  const nextSymptomOther = update.symptomOther ?? vital.symptomOther;
+  const nextSystolic = update.systolic !== undefined ? update.systolic : vital.systolic;
+  const nextDiastolic = update.diastolic !== undefined ? update.diastolic : vital.diastolic;
+  const hasSystolic = nextSystolic !== undefined && nextSystolic !== null && nextSystolic !== '';
+  const hasDiastolic = nextDiastolic !== undefined && nextDiastolic !== null && nextDiastolic !== '';
+  if (
+    hasInvalidMeasurement
+    || (hasSystolic !== hasDiastolic)
+    || (nextSymptoms?.includes('Other') && (typeof nextSymptomOther !== 'string' || !nextSymptomOther.trim() || nextSymptomOther.length > 200))
+  ) {
+    response.status(400).json({ error: 'Keep measurements within their allowed ranges and provide details for Other symptoms.' });
+    return;
+  }
+  if (!nextSymptoms?.includes('Other')) update.symptomOther = '';
+  Object.assign(vital, update);
+  if (request.user.role === 'doctor') {
+    vital.editedBy = request.user.id;
+    vital.editedAt = new Date();
+  }
+  await vital.save();
   await audit(request, {
     action: 'vital.updated',
     entityType: 'vital',
@@ -1385,7 +1608,7 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
   response.json({ vital });
 }));
 
-app.delete('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
+app.delete('/api/vitals/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid vital record ID.' });
     return;
@@ -1463,6 +1686,7 @@ app.use((error, _request, response, next) => {
 });
 
 export async function startServer() {
+  validateAdminRegistrationKey();
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required. Add your MongoDB Atlas connection string to server/.env.');
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('Set JWT_SECRET to a random secret of at least 32 characters in server/.env.');
   try {
@@ -1470,15 +1694,24 @@ export async function startServer() {
   } catch {
     throw new Error('HOSPITAL_TZ must be a valid IANA time zone.');
   }
+  mongoose.set('autoIndex', false);
+  const indexModels = [Appointment, Bed, Billing, ClinicalNote, Counter, Prescription, Vital, AuditLog];
+  for (const model of indexModels) {
+    model.on('index', (error) => {
+      if (error) console.error(`Could not build indexes for ${model.modelName}:`, error.message);
+    });
+  }
   await mongoose.connect(process.env.MONGODB_URI);
-  await User.collection.createIndex(
-    { isBootstrapAdmin: 1 },
-    {
-      name: 'unique_bootstrap_admin',
-      unique: true,
-      partialFilterExpression: { isBootstrapAdmin: true },
-    },
-  );
+  const indexResult = await ensureUserIndexes(mongoose.connection);
+  console.log('Ensured patient UHID index:', indexResult);
+  await User.createIndexes();
+  await Promise.all(indexModels.map(async (model) => {
+    try {
+      await model.createIndexes();
+    } catch (error) {
+      console.error(`Could not build indexes for ${model.modelName}:`, error.message);
+    }
+  }));
   const port = Number(process.env.PORT || process.env.API_PORT || 3001);
   return app.listen(port, '0.0.0.0', () => {
     console.log(`Curasys API listening on port ${port} (MongoDB connected)`);
