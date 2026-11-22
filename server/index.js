@@ -1249,7 +1249,7 @@ app.get('/api/billing', authenticate, allow('patient', 'receptionist'), asyncRou
 }));
 
 app.post('/api/billing', authenticate, allow('receptionist'), asyncRoute(async (request, response) => {
-  const { patientId, lineItems, discount, notes } = request.body ?? {};
+  const { patientId, appointmentId, lineItems, discount, notes } = request.body ?? {};
   const validAmount = (value) => typeof value === 'number'
     && Number.isFinite(value)
     && value >= 0
@@ -1262,6 +1262,16 @@ app.post('/api/billing', authenticate, allow('receptionist'), asyncRoute(async (
   const discountPaise = discount === undefined || discount === '' ? 0
     : validAmount(discount) ? Math.round(discount * 100) : NaN;
   const totalPaise = subtotalPaise - discountPaise;
+  let appointment = null;
+  if (appointmentId !== undefined) {
+    appointment = validObjectId(appointmentId)
+      ? await Appointment.findOne({ _id: appointmentId, patientId })
+      : null;
+    if (!appointment || appointment.status !== 'Consulted') {
+      response.status(409).json({ error: 'Choose a consulted appointment that is awaiting billing.' });
+      return;
+    }
+  }
   if (
     !validObjectId(patientId)
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
@@ -1279,6 +1289,7 @@ app.post('/api/billing', authenticate, allow('receptionist'), asyncRoute(async (
   }
   const bill = await Billing.create({
     patientId,
+    appointmentId: appointment?._id || null,
     createdBy: request.user.id,
     totalPaise,
     description: lineItems.map(({ description: itemDescription }) => itemDescription.trim()).join(', ').slice(0, 1000),
@@ -1290,11 +1301,15 @@ app.post('/api/billing', authenticate, allow('receptionist'), asyncRoute(async (
     notes: notes || '',
     invoiceNumber: await nextInvoiceNumber(),
   });
+  if (appointment) {
+    appointment.status = 'Billed';
+    await appointment.save();
+  }
   await audit(request, { action: 'billing.issued', entityType: 'billing', entityId: bill._id, patientId });
   response.status(201).json({ bill });
 }));
 
-app.put('/api/billing/:id', authenticate, allow('receptionist'), asyncRoute(async (request, response) => {
+app.put('/api/billing/:id', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
   const { status, paymentMethod, paymentReference = '' } = request.body ?? {};
   if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(status)) {
     response.status(400).json({ error: 'Choose a valid bill and status.' });
@@ -1302,6 +1317,10 @@ app.put('/api/billing/:id', authenticate, allow('receptionist'), asyncRoute(asyn
   }
   if (status === 'Void' && request.user.role !== 'admin') {
     response.status(403).json({ error: 'Only administrators can void bills.' });
+    return;
+  }
+  if (status === 'Paid' && request.user.role !== 'receptionist') {
+    response.status(403).json({ error: 'Only receptionists can record payments.' });
     return;
   }
   if (status === 'Paid' && (
@@ -1329,6 +1348,9 @@ app.put('/api/billing/:id', authenticate, allow('receptionist'), asyncRoute(asyn
     bill.paidBy = request.user.id;
   }
   await bill.save();
+  if (status === 'Paid' && bill.appointmentId) {
+    await Appointment.findOneAndUpdate({ _id: bill.appointmentId, status: 'Billed' }, { status: 'Paid' });
+  }
   await audit(request, { action: `billing.${bill.status.toLowerCase()}`, entityType: 'billing', entityId: bill._id, patientId: bill.patientId });
   response.json({ bill });
 }));

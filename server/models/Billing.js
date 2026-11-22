@@ -8,6 +8,7 @@ const lineItemSchema = new mongoose.Schema({
 
 const billingSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null, index: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   totalPaise: { type: Number, required: true, min: 1, max: 10_000_000_000, validate: Number.isSafeInteger },
   description: { type: String, required: true, trim: true, maxlength: 1000 },

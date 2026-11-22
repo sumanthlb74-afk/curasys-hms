@@ -1020,6 +1020,11 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(billOne.body.bill.lineItems[0].amountPaise, 12550);
   assert.equal(billTwo.status, 201);
   assert.equal(billTwo.body.bill.totalPaise, 19000);
+  assert.equal((await api('/api/billing', {
+    method: 'POST',
+    token: patientToken,
+    body: { patientId: doctorPatient.body.patient.id, lineItems: [{ description: 'Forbidden', amount: 1 }] },
+  })).status, 403);
   assert.notEqual(billOne.body.bill.invoiceNumber, billTwo.body.bill.invoiceNumber);
   await assert.rejects(Billing.create({
     patientId: doctorPatient.body.patient.id,
@@ -1048,11 +1053,23 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(paidBill.body.bill.status, 'Paid');
   assert.equal(paidBill.body.bill.paymentMethod, 'UPI QR');
   assert.equal(String(paidBill.body.bill.paidBy), receptionistCreation.body.receptionist.id);
+  assert.equal((await api(`/api/billing/${billOne.body.bill._id}`, {
+    method: 'PUT',
+    token: receptionistToken,
+    body: { status: 'Paid', paymentMethod: 'Cash' },
+  })).status, 409);
   assert.equal((await api(`/api/billing/${billTwo.body.bill._id}`, {
     method: 'PUT',
     token: receptionistToken,
     body: { status: 'Void' },
   })).status, 403);
+  const voidedBill = await api(`/api/billing/${billTwo.body.bill._id}`, {
+    method: 'PUT',
+    token: adminToken,
+    body: { status: 'Void' },
+  });
+  assert.equal(voidedBill.status, 200);
+  assert.equal(voidedBill.body.bill.status, 'Void');
 
   const auditAsAdmin = await api('/api/audit', { token: adminToken });
   assert.equal(auditAsAdmin.status, 403);

@@ -72,6 +72,19 @@ Status: implemented locally and pushed for CI verification.
 
 Verification: lint passed; 40 tests passed; 1 local Mongo integration test skipped because `MONGODB_TEST_URI` is not set; build passed. No production database was used.
 
+## Stage 5 — receptionist billing and simulated payment
+
+Status: implemented locally and pushed for CI verification.
+
+- Added an additive `appointmentId` link on bills; receptionists can select consulted appointments in an Awaiting billing section and see the prescription read-only.
+- Prescription medicines seed bill rows, extra rows remain available, and the server computes the saved total and discount in integer paise without trusting client totals.
+- Issuing a linked bill advances the appointment to `Billed`; recording a payment is receptionist-only, stores payment metadata, and advances the appointment to `Paid`.
+- Prevented paying or voiding a non-unpaid bill twice; administrator-only voiding remains available through the server route, while patients cannot create bills.
+- Kept simulated payment safeguards: the UPI QR encodes only the demo invoice text and card entry accepts only an optional reference/last-four-style text; invoices have a print stylesheet and button.
+- Added model and integration assertions for patient billing denial, server total handling, duplicate payment rejection, and administrator voiding.
+
+Verification: lint passed; 40 tests passed; 1 local Mongo integration test skipped because `MONGODB_TEST_URI` is not set; build passed; `npm audit --audit-level=moderate` reported 0 vulnerabilities. No production database was used.
+
 ## Next stage
 
-Wait for GitHub Actions CI, then implement Stage 5: prescription-linked billing line items and payment workflow verification.
+Run GitHub Actions CI with its isolated MongoDB, then review the deployed receptionist flow before opening or updating the pull request.

@@ -259,6 +259,7 @@ test('billing requires a patient, administrator, positive whole-paise amount, an
   });
   assert.equal(await getValidationError(valid), null);
   assert.equal(valid.status, 'Unpaid');
+  assert.equal(valid.appointmentId, null);
   assert.equal(valid.paidAt, null);
   assert.deepEqual(Billing.schema.path('paymentMethod').enumValues, ['', ...paymentMethods]);
   assert.equal(valid.discountPaise, 0);

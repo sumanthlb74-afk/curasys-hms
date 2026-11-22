@@ -1,3 +1,10 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+@media print {
+  body * { visibility: hidden !important; }
+  .printable-invoice, .printable-invoice * { visibility: visible !important; }
+  .printable-invoice { position: absolute; inset: 0; padding: 2rem; color: #111827; background: white; }
+  .no-print { display: none !important; }
+}

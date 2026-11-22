@@ -1325,6 +1325,8 @@ function ReceptionistDashboard({ notify }) {
   });
   const [reportPatientId, setReportPatientId] = useState('');
   const [report, setReport] = useState({ loading: false, error: '', prescription: null });
+  const [billingAppointmentId, setBillingAppointmentId] = useState('');
+  const [billingPrescription, setBillingPrescription] = useState(null);
   const reportRequest = useRef(0);
   const [billForm, setBillForm] = useState({
     patientId: '',
@@ -1365,6 +1367,32 @@ function ReceptionistDashboard({ notify }) {
     }
   };
 
+  const chooseBillingAppointment = async (appointmentId) => {
+    setBillingAppointmentId(appointmentId);
+    const appointment = appointments.find((item) => item._id === appointmentId);
+    if (!appointment) {
+      setBillingPrescription(null);
+      setBillForm((value) => ({ ...value, patientId: '', lineItems: [{ description: '', amount: '' }] }));
+      return;
+    }
+    try {
+      const { data: result } = await api.get(`/prescriptions?patientId=${encodeURIComponent(appointment.patientId?._id)}&limit=20`);
+      const prescription = result.prescriptions?.[0] || null;
+      setBillingPrescription(prescription);
+      setBillForm((value) => ({
+        ...value,
+        patientId: appointment.patientId?._id || '',
+        lineItems: prescription?.medicines?.map((medicine) => ({
+          description: `${medicine.name} · ${medicine.dosage} · ${medicine.frequency}${medicine.timing ? ` · ${medicine.timing}` : ''}`,
+          amount: '',
+        })) || [{ description: '', amount: '' }],
+      }));
+    } catch (requestError) {
+      setBillingPrescription(null);
+      notify(requestError.message, 'error');
+    }
+  };
+
   const bookAppointment = async (event) => {
     event.preventDefault();
     try {
@@ -1383,11 +1411,14 @@ function ReceptionistDashboard({ notify }) {
     try {
       await api.post('/billing', {
         patientId: billForm.patientId,
+        appointmentId: billingAppointmentId || undefined,
         lineItems: billForm.lineItems.map((item) => ({ ...item, amount: Number(item.amount) })),
         discount: billForm.discount === '' ? undefined : Number(billForm.discount),
         notes: billForm.notes,
       });
       notify('Bill issued. No payment has been processed.');
+      setBillingAppointmentId('');
+      setBillingPrescription(null);
       setBillForm({ patientId: '', lineItems: [{ description: 'Consultation fee', amount: '' }], discount: '', notes: '' });
       refresh();
     } catch (requestError) {
@@ -1455,6 +1486,10 @@ function ReceptionistDashboard({ notify }) {
                   </article>}
         </div>
       </Card>
+      <Card title={`Awaiting billing · ${appointments.filter((appointment) => appointment.status === 'Consulted').length}`} icon={Receipt}>
+        <Field label="Consulted appointment"><Select value={billingAppointmentId} onChange={(event) => chooseBillingAppointment(event.target.value)}><option value="">Select an appointment</option>{appointments.filter((appointment) => appointment.status === 'Consulted').map((appointment) => <option key={appointment._id} value={appointment._id}>{appointment.patientId?.name} · {formatAppointmentDate(appointment.date)} · {formatAppointmentSlot(appointment.time)}</option>)}</Select></Field>
+        {billingPrescription && <article className="mt-4 rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800/60"><p className="font-semibold">Prescription (read-only)</p><p className="mt-1">Diagnosis: {billingPrescription.diagnosis}</p><ul className="mt-2 list-disc pl-5">{billingPrescription.medicines.map((medicine, index) => <li key={`${billingPrescription._id}-${index}`}>{medicine.name} · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.timing ? ` · ${medicine.timing}` : ''}</li>)}</ul>{billingPrescription.advice?.suggestions?.length > 0 && <p className="mt-2">Advice: {billingPrescription.advice.suggestions.join(' · ')}</p>}</article>}
+      </Card>
       <Card title="Create bill" icon={Receipt}>
         <form onSubmit={createBill} className="grid gap-3">
           <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
@@ -1473,12 +1508,13 @@ function ReceptionistDashboard({ notify }) {
         </form>
       </Card>
       <Card title="Bills and payment" icon={Receipt}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills match this search.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="rounded-xl border border-slate-200 p-4 text-sm dark:border-slate-700">
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills match this search.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="printable-invoice rounded-xl border border-slate-200 p-4 text-sm dark:border-slate-700">
           <div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{bill.invoiceNumber} · {bill.patientId?.name} · {bill.status}</p><p className="font-bold">{formatCurrency(bill.totalPaise)}</p></div>
           <ul className="mt-2 space-y-1">{bill.lineItems?.length ? bill.lineItems.map((item, index) => <li key={`${bill._id}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{formatCurrency(item.amountPaise)}</span></li>) : <li>{bill.description}</li>}</ul>
           {bill.discountPaise > 0 && <p className="mt-1">Discount: −{formatCurrency(bill.discountPaise)}</p>}
           {bill.paymentMethod && <p className="mt-2">Payment: {bill.paymentMethod}{bill.paidAt ? ` · ${new Date(bill.paidAt).toLocaleString()}` : ''}</p>}
-          {bill.status === 'Unpaid' && <button type="button" className="mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
+          {bill.status === 'Unpaid' && <button type="button" className="no-print mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
+          <button type="button" className="no-print ml-2 mt-3 rounded-lg border px-3 py-2 text-xs font-semibold" onClick={() => window.print()}>Print invoice</button>
         </article>)}</div>}
       </Card>
       <Card title={`Today's appointment queue · ${todaysAppointments.length}`} icon={CalendarDays}>
