@@ -91,16 +91,16 @@ Run GitHub Actions CI with its isolated MongoDB, then review the deployed recept
 
 ## Stage 7 — database, deploy readiness, and rigorous test
 
-Status: code and readiness work completed; two environment-dependent checks remain pending.
+Status: completed; CI remains the final isolated-Mongo verification.
 
 | Item | Result | Evidence / remaining action |
 |---|---|---|
 | Local Atlas connection | PASS | `GET /api/health` returned the single-word result `connected`; no URI or secret was printed. |
 | UHID migration and indexes | PASS | `npm.cmd run migrate:uhid` completed; startup built the new named appointment index without the previous conflict; verification returned `indexes-ok`. |
-| Demo seed | PENDING | `npm.cmd run seed:demo` is added and refuses production; the configured Atlas database name is not visibly dev/local, so run it only after confirming that database is safe for demo writes. |
+| Demo seed | PASS | User confirmed the Atlas database is safe for fictional demo data; `npm.cmd run seed:demo` completed and refuses production. No password was printed or committed. |
 | Lint, unit tests, build, audit | PASS | Lint, build, and `npm audit --omit=dev` passed; 40 tests passed and 1 Mongo integration test was skipped because `MONGODB_TEST_URI` is unset. |
-| Playwright desktop/phone smoke | PENDING | Suite and screenshots are added; Chromium download timed out in this environment, so it was not run. Install Chromium, seed local demo accounts, set `E2E_PASSWORD`, then run `npm.cmd run test:e2e`. |
+| Playwright desktop/phone smoke | PASS | Chromium ran headlessly; all 5 role dashboards passed at 1280×720 and 390×844 with screenshots, logout, no console errors, no failed/4xx/5xx requests, and no horizontal overflow. Fixed responsive card/table overflow. |
 | README and Render readiness | PASS | Added local seed instructions, demo login IDs without passwords, flow text, test commands, and Render variable/deploy checklist. |
 | Production writes | NOT RUN | No production records were created or changed. |
 
-Manual next steps: confirm the `.env` Atlas database is a fictional development database or replace it with a separate `curasys_dev` URI, set `DEMO_SEED_PASSWORD` locally, run the seed, install Chromium, set `E2E_PASSWORD` to the same process-local value, and run the Playwright suite. Set `MONGODB_TEST_URI` only to a local MongoDB database beginning with `curasys_hms_test` before rerunning integration tests.
+Manual next steps: GitHub Actions must run the integration test against its isolated MongoDB service. Set `MONGODB_TEST_URI` only to a local MongoDB database beginning with `curasys_hms_test` if you want to reproduce that test on this computer; never use Atlas for it.

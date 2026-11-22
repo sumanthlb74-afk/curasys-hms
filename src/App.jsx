@@ -185,7 +185,7 @@ function Textarea(props) {
 
 function Card({ title, icon: Icon, action, children, className = '' }) {
   return (
-    <section className={`rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 ${className}`}>
+    <section className={`min-w-0 rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 ${className}`}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">{Icon && <Icon className="h-4 w-4 text-teal-600" />}{title}</h2>
         {action}
@@ -579,7 +579,7 @@ function PatientRegistrationForm({ notify, onCreated }) {
         <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Patient identity & contact</p>
         <Field label="Full legal name"><Input autoComplete="name" maxLength="100" value={form.name} onChange={change('name')} required /></Field>
         <Field label="Email / patient login"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
-        <Field label="Temporary password"><span className="flex gap-2"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required /><button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button></span><span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500"><span>The patient must replace it at first sign-in.</span><button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => { const password = generateTemporaryPassword(); setForm((value) => ({ ...value, password, confirmPassword: password })); setShowPassword(true); }}>Generate strong temporary password</button></span></Field>
+        <Field label="Temporary password"><span className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required /><button type="button" className="shrink-0 rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button></span><span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500"><span>The patient must replace it at first sign-in.</span><button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => { const password = generateTemporaryPassword(); setForm((value) => ({ ...value, password, confirmPassword: password })); setShowPassword(true); }}>Generate strong temporary password</button></span></Field>
         <Field label="Confirm temporary password"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
         <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
         <Field label="Date of birth"><Input type="date" max={localDateValue()} value={form.dateOfBirth} onChange={change('dateOfBirth')} required />{calculateAge(form.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(form.dateOfBirth)} years (calculated)</span>}</Field>
@@ -702,9 +702,9 @@ function AdminAccountForm({ notify, onCreated }) {
         <Field label="Email / login ID"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
         <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
         <Field label="Temporary password">
-          <span className="flex gap-2">
-            <Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required />
-            <button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
+          <span className="flex min-w-0 gap-2">
+            <Input className="min-w-0 flex-1" type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required />
+            <button type="button" className="shrink-0 rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
           </span>
           <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500">
             <span>Must be changed at first sign-in.</span>
@@ -796,7 +796,7 @@ function PatientPasswordReset({ patients, notify, onReset }) {
 }
 
 function PageTitle({ eyebrow, title, description, icon: Icon }) {
-  return <div className="flex items-start gap-4"><span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-teal-600/10 text-teal-700 dark:text-teal-300">{Icon && <Icon className="h-6 w-6" />}</span><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-700 dark:text-teal-300">{eyebrow}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-slate-500">{description}</p></div></div>;
+  return <div className="flex min-w-0 items-start gap-4"><span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-teal-600/10 text-teal-700 dark:text-teal-300">{Icon && <Icon className="h-6 w-6" />}</span><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-700 dark:text-teal-300">{eyebrow}</p><h1 className="mt-1 break-words text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 break-words text-sm text-slate-500">{description}</p></div></div>;
 }
 
 function PatientDashboard({ user, notify }) {
