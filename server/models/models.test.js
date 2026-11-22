@@ -9,7 +9,7 @@ import Prescription from './Prescription.js';
 import User from './User.js';
 import Vital from './Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
-import { bloodGroups, departments, triageLevels, wards } from '../../shared/constants.js';
+import { bloodGroups, departments, preliminaryCheckSymptoms, triageLevels, wards } from '../../shared/constants.js';
 
 test('shared contact validators reject wrong types and oversized values', () => {
   assert.equal(isOptionalPhone(123), false);
@@ -262,4 +262,24 @@ test('vital schema rejects measurements outside validated ranges', async () => {
   }));
   assert.ok(error.errors.oxygenSaturation);
   assert.ok(error.errors.temperatureC);
+});
+
+test('preliminary checks validate their symptoms against the shared list', async () => {
+  const valid = new Vital({
+    patientId: '507f1f77bcf86cd799439011',
+    recordedBy: '507f1f77bcf86cd799439012',
+    enteredBy: '507f1f77bcf86cd799439012',
+    enteredByRole: 'staff',
+    heartRate: 72,
+    symptoms: ['Fever and cold', 'Other'],
+    symptomOther: 'Light sensitivity',
+  });
+  assert.equal(await getValidationError(valid), null);
+  assert.ok(preliminaryCheckSymptoms.includes('Stomach pain or nausea'));
+  const invalid = await getValidationError(new Vital({
+    patientId: '507f1f77bcf86cd799439011',
+    recordedBy: '507f1f77bcf86cd799439012',
+    symptoms: ['Unknown symptom'],
+  }));
+  assert.ok(invalid.errors['symptoms.0']);
 });

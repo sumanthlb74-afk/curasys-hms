@@ -27,6 +27,7 @@ import {
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
   triageLevels,
   wards,
@@ -1423,33 +1424,56 @@ app.get('/api/vitals', authenticate, allow('patient', 'doctor', 'admin'), asyncR
   response.json({ vitals: result.items, ...result });
 }));
 
-app.post('/api/vitals', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
+app.post('/api/vitals', authenticate, allow('staff', 'admin'), asyncRoute(async (request, response) => {
   const {
-    patientId, heartRate, systolic, diastolic, respiratoryRate, temperatureC,
-    bloodGlucose, oxygenSaturation, heightCm, weightKg, notes,
+    patientId, heartRate, systolic, diastolic, temperatureC, oxygenSaturation,
+    heightCm, weightKg, symptoms, symptomOther, notes,
   } = request.body ?? {};
-  const targetPatientId = patientId;
-  if (
-    !validObjectId(targetPatientId)
-    || !await User.exists({ _id: targetPatientId, role: 'patient', isActive: { $ne: false } })
-    || !await doctorCanAccessPatient(request.user.id, targetPatientId)
-  ) {
+  const ranges = {
+    heartRate: [20, 300],
+    systolic: [40, 300],
+    diastolic: [20, 200],
+    temperatureC: [25, 45],
+    oxygenSaturation: [1, 100],
+    heightCm: [30, 250],
+    weightKg: [1, 500],
+  };
+  const hasInvalidMeasurement = Object.entries(ranges).some(([field, [min, max]]) => {
+    const value = request.body?.[field];
+    return value !== undefined && value !== null && value !== ''
+      && (!Number.isFinite(Number(value)) || Number(value) < min || Number(value) > max);
+  });
+  if (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })) {
     response.status(400).json({ error: 'Choose a valid patient.' });
     return;
   }
-  const values = { heartRate, systolic, diastolic, respiratoryRate, temperatureC, bloodGlucose, oxygenSaturation, heightCm, weightKg };
+  const values = { heartRate, systolic, diastolic, temperatureC, oxygenSaturation, heightCm, weightKg };
   const hasVital = Object.values(values).some((value) => value !== undefined && value !== null && value !== '');
-  if (!hasVital || (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000))) {
-    response.status(400).json({ error: 'Enter at least one vital measurement and valid notes.' });
+  if (
+    !hasVital || hasInvalidMeasurement
+    || !Array.isArray(symptoms) || symptoms.length < 1
+    || symptoms.some((symptom) => !preliminaryCheckSymptoms.includes(symptom))
+    || new Set(symptoms).size !== symptoms.length
+    || (symptoms.includes('Other') && (typeof symptomOther !== 'string' || !symptomOther.trim() || symptomOther.length > 200))
+    || (!symptoms.includes('Other') && symptomOther !== undefined && symptomOther !== '')
+    || (systolic !== undefined && systolic !== '' && (diastolic === undefined || diastolic === ''))
+    || (diastolic !== undefined && diastolic !== '' && (systolic === undefined || systolic === ''))
+    || (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000))
+  ) {
+    response.status(400).json({ error: 'Enter valid measurements, select allowed symptoms, and provide Other details when selected.' });
     return;
   }
   const vital = await Vital.create({
-    patientId: targetPatientId,
+    patientId,
     recordedBy: request.user.id,
+    enteredBy: request.user.id,
+    enteredByRole: request.user.role,
+    symptoms,
+    symptomOther: symptomOther || '',
     ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value === '' ? null : value])),
     notes: notes || '',
   });
-  await audit(request, { action: 'vital.created', entityType: 'vital', entityId: vital._id, patientId: targetPatientId });
+  await audit(request, { action: 'vital.created', entityType: 'vital', entityId: vital._id, patientId });
   response.status(201).json({ vital });
 }));
 

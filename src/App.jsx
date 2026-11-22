@@ -1277,6 +1277,7 @@ function StaffDashboard({ notify }) {
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
+      <PreliminaryCheckForm patients={patients} notify={notify} onSaved={refresh} />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Book an appointment" icon={CalendarDays}>
           <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
