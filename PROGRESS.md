@@ -58,3 +58,20 @@ Verification: lint passed; 39 tests passed; 1 local Mongo integration test skipp
 ## Next stage
 
 Wait for GitHub Actions CI, then implement Stage 4: fixed medicine timing (`whenToTake`) and prescription-linked billing line items.
+
+## Stage 4 — doctor prescriptions and consultation
+
+Status: implemented locally and pushed for CI verification.
+
+- Added shared prescription frequency, duration, and timing lists; each new medicine row now uses dropdowns for frequency, duration/custom duration, and WHEN to take.
+- Added the additive `timing` field to prescription medicines with a server/Mongoose enum validation.
+- Doctor prescription entry now requires opening one of the doctor’s appointments and sends its ID to the server.
+- The server verifies the appointment belongs to the doctor and patient, then advances it to `Consulted` after prescription creation.
+- Existing doctor ownership rules remain enforced for listing, creating, editing, and deleting prescriptions; the check editor remains a proper dialog and records edits server-side.
+- Added model and integration coverage for timing validation, role ownership, appointment consultation status, and invalid timing.
+
+Verification: lint passed; 40 tests passed; 1 local Mongo integration test skipped because `MONGODB_TEST_URI` is not set; build passed. No production database was used.
+
+## Next stage
+
+Wait for GitHub Actions CI, then implement Stage 5: prescription-linked billing line items and payment workflow verification.
