@@ -20,6 +20,9 @@ export const prescriptionAdviceSuggestions = Object.freeze([
   'Avoid smoking and alcohol',
   'Follow-up visit in 1 week',
 ]);
+export const prescriptionFrequencies = Object.freeze(['Once daily', 'Twice daily', 'Thrice daily', 'As needed']);
+export const prescriptionDurations = Object.freeze(['3 days', '5 days', '7 days', '10 days', '14 days', '30 days', 'Custom']);
+export const prescriptionTimings = Object.freeze(['Before food', 'After food', 'With food', 'Bedtime']);
 export const preliminaryCheckSymptoms = Object.freeze([
   'Fever and cold',
   'Headache and body ache',
@@ -27,5 +30,18 @@ export const preliminaryCheckSymptoms = Object.freeze([
   'Other',
 ]);
 export const paymentMethods = Object.freeze(['Cash', 'Card', 'UPI QR', 'Net Banking']);
-export const defaultClinicStartHour = 8;
-export const defaultClinicEndHour = 20;
+export const signInRoles = Object.freeze(['doctor', 'staff', 'receptionist', 'admin']);
+export const appointmentStatuses = Object.freeze(['Booked', 'Checked in', 'Vitals done', 'Consulted', 'Billed', 'Paid', 'Cancelled', 'Scheduled', 'Completed']);
+export const appointmentStatusTransitions = Object.freeze({
+  Booked: Object.freeze(['Checked in', 'Vitals done', 'Cancelled']),
+  'Checked in': Object.freeze(['Vitals done', 'Cancelled']),
+  'Vitals done': Object.freeze(['Consulted', 'Cancelled']),
+  Consulted: Object.freeze(['Billed', 'Cancelled']),
+  Billed: Object.freeze(['Paid']),
+  Paid: Object.freeze([]),
+  Cancelled: Object.freeze([]),
+  Scheduled: Object.freeze(['Checked in', 'Vitals done', 'Cancelled']),
+  Completed: Object.freeze([]),
+});
+export const defaultClinicStartHour = 0;
+export const defaultClinicEndHour = 24;

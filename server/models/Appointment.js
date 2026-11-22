@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { triageLevels } from '../../shared/constants.js';
+import { appointmentStatuses, triageLevels } from '../../shared/constants.js';
 
 const appointmentSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -10,8 +10,8 @@ const appointmentSchema = new mongoose.Schema({
   symptoms: { type: String, required: true, trim: true, maxlength: 2000 },
   status: {
     type: String,
-    enum: ['Scheduled', 'Completed', 'Cancelled'],
-    default: 'Scheduled',
+    enum: appointmentStatuses,
+    default: 'Booked',
     index: true,
   },
   triage: {
@@ -24,8 +24,9 @@ const appointmentSchema = new mongoose.Schema({
 appointmentSchema.index(
   { doctorId: 1, date: 1, time: 1 },
   {
+    name: 'appointment_doctor_slot_active_unique_v2',
     unique: true,
-    partialFilterExpression: { status: 'Scheduled', doctorId: { $type: 'objectId' } },
+    partialFilterExpression: { status: { $in: appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status)) }, doctorId: { $type: 'objectId' } },
   },
 );
 

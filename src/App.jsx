@@ -7,14 +7,20 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import api from './api.js';
+import AdminAccountsOnlyDashboard from './components/AdminAccountsOnlyDashboard.jsx';
 import {
   bloodGroups,
+  appointmentStatuses,
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
   paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
+  prescriptionDurations,
+  prescriptionFrequencies,
+  prescriptionTimings,
+  signInRoles,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -44,6 +50,7 @@ const appointmentSlots = Array.from({ length: clinicEndHour - clinicStartHour },
   const endLabel = new Date(Date.UTC(2020, 0, 1, endHour)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
   return { time, label: `${startLabel} – ${endLabel} (${time}–${endTime})` };
 });
+const activeAppointmentStatuses = appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status));
 
 let apiWarmupPromise;
 let setupStatusPromise;
@@ -178,7 +185,7 @@ function Textarea(props) {
 
 function Card({ title, icon: Icon, action, children, className = '' }) {
   return (
-    <section className={`rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 ${className}`}>
+    <section className={`min-w-0 rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 ${className}`}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">{Icon && <Icon className="h-4 w-4 text-teal-600" />}{title}</h2>
         {action}
@@ -346,7 +353,7 @@ function AppRoutes() {
         <Route path="/doctor-dashboard" element={<Protected user={user} role="doctor"><DoctorDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/medical-staff" element={<Protected user={user} role="staff"><StaffDashboard notify={notify} /></Protected>} />
         <Route path="/receptionist-dashboard" element={<Protected user={user} role="receptionist"><ReceptionistDashboard notify={notify} /></Protected>} />
-        <Route path="/admin-command-center" element={<Protected user={user} role="admin"><AdminDashboard notify={notify} /></Protected>} />
+        <Route path="/admin-command-center" element={<Protected user={user} role="admin"><AdminAccountsOnlyDashboard user={user} notify={notify} CreateAccountForm={AdminAccountForm} /></Protected>} />
         <Route path="*" element={<Navigate to={user ? path : '/login'} replace state={{ from: location.pathname }} />} />
       </Routes>
     </div>
@@ -403,7 +410,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
   const [setupOpen, setSetupOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showWakeMessage, setShowWakeMessage] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '', role: 'doctor' });
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   useEffect(() => {
     if (patientOnly) return;
@@ -428,7 +435,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
       const isRegister = mode === 'register';
       const payload = isRegister
         ? { name: form.name, email: form.email, password: form.password, phone: form.phone, adminRegistrationKey: form.adminRegistrationKey, role: 'admin' }
-        : { email: form.email, password: form.password };
+        : { email: form.email, password: form.password, role: patientOnly ? 'patient' : form.role };
       const { data } = await api.post(isRegister ? '/auth/register' : '/auth/login', payload);
       if (patientOnly && data.user.role !== 'patient') {
         notify('This sign-in page is for patients. Use the staff and administrator sign-in page for hospital accounts.', 'error');
@@ -457,6 +464,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
         <form onSubmit={submit} className="grid gap-4">
           {isRegister && <Field label="Full name"><Input value={form.name} onChange={change('name')} autoComplete="name" required maxLength={100} /></Field>}
           <Field label="Email"><Input type="email" value={form.email} onChange={change('email')} autoComplete="email" required /></Field>
+          {!patientOnly && !isRegister && <Field label="Sign in as"><Select value={form.role} onChange={change('role')}>{signInRoles.map((role) => <option key={role} value={role}>{role === 'staff' ? 'Medical Staff' : role[0].toUpperCase() + role.slice(1)}</option>)}</Select></Field>}
           <Field label="Password"><Input type="password" value={form.password} onChange={change('password')} autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={isRegister ? 8 : undefined} maxLength={72} required /></Field>
           {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} maxLength={72} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
@@ -571,7 +579,7 @@ function PatientRegistrationForm({ notify, onCreated }) {
         <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 sm:col-span-2">Patient identity & contact</p>
         <Field label="Full legal name"><Input autoComplete="name" maxLength="100" value={form.name} onChange={change('name')} required /></Field>
         <Field label="Email / patient login"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
-        <Field label="Temporary password"><span className="flex gap-2"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required /><button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button></span><span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500"><span>The patient must replace it at first sign-in.</span><button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => { const password = generateTemporaryPassword(); setForm((value) => ({ ...value, password, confirmPassword: password })); setShowPassword(true); }}>Generate strong temporary password</button></span></Field>
+        <Field label="Temporary password"><span className="flex min-w-0 gap-2"><Input className="min-w-0 flex-1" type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required /><button type="button" className="shrink-0 rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button></span><span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500"><span>The patient must replace it at first sign-in.</span><button type="button" className="font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => { const password = generateTemporaryPassword(); setForm((value) => ({ ...value, password, confirmPassword: password })); setShowPassword(true); }}>Generate strong temporary password</button></span></Field>
         <Field label="Confirm temporary password"><Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.confirmPassword} onChange={change('confirmPassword')} required /></Field>
         <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
         <Field label="Date of birth"><Input type="date" max={localDateValue()} value={form.dateOfBirth} onChange={change('dateOfBirth')} required />{calculateAge(form.dateOfBirth) !== null && <span className="text-xs font-normal text-slate-500">Age: {calculateAge(form.dateOfBirth)} years (calculated)</span>}</Field>
@@ -694,9 +702,9 @@ function AdminAccountForm({ notify, onCreated }) {
         <Field label="Email / login ID"><Input type="email" autoComplete="email" maxLength="254" value={form.email} onChange={change('email')} required /></Field>
         <Field label="Phone"><Input type="tel" autoComplete="tel" maxLength="30" value={form.phone} onChange={change('phone')} /></Field>
         <Field label="Temporary password">
-          <span className="flex gap-2">
-            <Input type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required />
-            <button type="button" className="rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
+          <span className="flex min-w-0 gap-2">
+            <Input className="min-w-0 flex-1" type={showPassword ? 'text' : 'password'} minLength="8" maxLength="72" autoComplete="new-password" value={form.password} onChange={change('password')} required />
+            <button type="button" className="shrink-0 rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-700" onClick={() => setShowPassword((value) => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
           </span>
           <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500">
             <span>Must be changed at first sign-in.</span>
@@ -788,7 +796,7 @@ function PatientPasswordReset({ patients, notify, onReset }) {
 }
 
 function PageTitle({ eyebrow, title, description, icon: Icon }) {
-  return <div className="flex items-start gap-4"><span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-teal-600/10 text-teal-700 dark:text-teal-300">{Icon && <Icon className="h-6 w-6" />}</span><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-700 dark:text-teal-300">{eyebrow}</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-slate-500">{description}</p></div></div>;
+  return <div className="flex min-w-0 items-start gap-4"><span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-teal-600/10 text-teal-700 dark:text-teal-300">{Icon && <Icon className="h-6 w-6" />}</span><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-700 dark:text-teal-300">{eyebrow}</p><h1 className="mt-1 break-words text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 break-words text-sm text-slate-500">{description}</p></div></div>;
 }
 
 function PatientDashboard({ user, notify }) {
@@ -841,13 +849,13 @@ function DoctorDashboard({ user, notify }) {
   const prescriptions = data.prescriptions?.prescriptions || [];
   const vitals = data.vitals?.vitals || [];
   const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
-  const emptyPrescription = { patientId: '', diagnosis: '', instructions: '', followUp: '', advice: { suggestions: [], notes: '' }, medicines: [{ name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] };
+  const emptyPrescription = { patientId: '', appointmentId: '', diagnosis: '', instructions: '', followUp: '', advice: { suggestions: [], notes: '' }, medicines: [{ name: '', dosage: '', frequency: '', duration: '', customDuration: '', timing: '', route: '', instructions: '' }] };
   const emptyClinicalNote = { patientId: '', chiefComplaint: '', historyOfPresentIllness: '', examination: '', assessment: '', plan: '', followUp: '' };
   const [prescription, setPrescription] = useState(emptyPrescription);
   const [clinicalNote, setClinicalNote] = useState(emptyClinicalNote);
   const [editingRecord, setEditingRecord] = useState(null);
   const selectedPatientChecks = vitals.filter((record) => String(record.patientId?._id || record.patientId) === prescription.patientId);
-  const [filter, setFilter] = useState('Scheduled');
+  const [filter, setFilter] = useState('All');
   const [profilePatientId, setProfilePatientId] = useState('');
   const profilePatient = patients.find((item) => item._id === profilePatientId);
   const patientChart = [
@@ -864,7 +872,8 @@ function DoctorDashboard({ user, notify }) {
       await api.post('/prescriptions', {
         patientId: prescription.patientId,
         diagnosis: prescription.diagnosis,
-        medicines: prescription.medicines,
+        medicines: prescription.medicines.map((medicine) => ({ ...medicine, duration: medicine.duration === 'Custom' ? medicine.customDuration : medicine.duration })),
+        appointmentId: prescription.appointmentId || undefined,
         instructions: prescription.instructions,
         followUp: prescription.followUp,
         advice: prescription.advice,
@@ -926,18 +935,20 @@ function DoctorDashboard({ user, notify }) {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Write prescription" icon={ClipboardList}>
           <form onSubmit={savePrescription} className="grid gap-3 sm:grid-cols-2">
+            <Field label="Open appointment"><Select required value={prescription.appointmentId} onChange={(event) => { const selected = appointments.find((appointment) => appointment._id === event.target.value); setPrescription((value) => ({ ...value, appointmentId: event.target.value, patientId: selected?.patientId?._id || value.patientId })); }}><option value="">Select an appointment</option>{appointments.map((appointment) => <option key={appointment._id} value={appointment._id}>{appointment.patientId?.name} · {appointment.department} · {formatAppointmentDate(appointment.date)} {formatAppointmentSlot(appointment.time)} · {appointment.status}</option>)}</Select></Field>
             <Field label="Patient"><Select required value={prescription.patientId} onChange={change(setPrescription, 'patientId')}><option value="">Select a patient</option>{patients.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.uhid}</option>)}</Select></Field>
             <Field label="Diagnosis"><Input required value={prescription.diagnosis} onChange={change(setPrescription, 'diagnosis')} /></Field>
             {prescription.medicines.map((medicine, index) => <div key={index} className="grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2 sm:grid-cols-2">
               <Field label="Medicine"><Input required maxLength="100" value={medicine.name} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item) }))} /></Field>
               <Field label="Dosage"><Input required maxLength="100" value={medicine.dosage} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, dosage: event.target.value } : item) }))} placeholder="e.g. 10 mg" /></Field>
-              <Field label="Frequency"><Input required maxLength="100" value={medicine.frequency} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, frequency: event.target.value } : item) }))} placeholder="e.g. Twice daily" /></Field>
-              <Field label="Duration"><Input required maxLength="100" value={medicine.duration} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, duration: event.target.value } : item) }))} placeholder="e.g. 7 days" /></Field>
+              <Field label="Frequency"><Select required value={medicine.frequency} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, frequency: event.target.value } : item) }))}><option value="">Select frequency</option>{prescriptionFrequencies.map((frequency) => <option key={frequency}>{frequency}</option>)}</Select></Field>
+              <Field label="Duration"><Select required value={medicine.duration} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, duration: event.target.value } : item) }))}><option value="">Select duration</option>{prescriptionDurations.map((duration) => <option key={duration}>{duration}</option>)}</Select>{medicine.duration === 'Custom' && <Input required maxLength="100" value={medicine.customDuration || ''} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, customDuration: event.target.value } : item) }))} placeholder="e.g. 21 days" />}</Field>
+              <Field label="WHEN to take"><Select required value={medicine.timing} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, timing: event.target.value } : item) }))}><option value="">Select timing</option>{prescriptionTimings.map((timing) => <option key={timing}>{timing}</option>)}</Select></Field>
               <Field label="Route"><Input maxLength="50" value={medicine.route} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, route: event.target.value } : item) }))} placeholder="e.g. Oral" /></Field>
               <Field label="Medicine instructions"><Input maxLength="500" value={medicine.instructions} onChange={(event) => setPrescription((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, instructions: event.target.value } : item) }))} placeholder="e.g. Take with food" /></Field>
               {prescription.medicines.length > 1 && <button type="button" onClick={() => setPrescription((value) => ({ ...value, medicines: value.medicines.filter((_, itemIndex) => itemIndex !== index) }))} className="justify-self-start text-xs text-rose-600 hover:underline sm:col-span-2">Remove medicine</button>}
             </div>)}
-            <button type="button" disabled={prescription.medicines.length >= 30} onClick={() => setPrescription((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))} className="text-left text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2">+ Add another medicine</button>
+            <button type="button" disabled={prescription.medicines.length >= 30} onClick={() => setPrescription((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', customDuration: '', timing: '', route: '', instructions: '' }] }))} className="text-left text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2">+ Add another medicine</button>
             <Field label="Prescription instructions"><Textarea rows="2" maxLength="2000" value={prescription.instructions} onChange={change(setPrescription, 'instructions')} placeholder="Additional guidance for the patient" /></Field>
             <Field label="Prescription follow-up"><Input maxLength="500" value={prescription.followUp} onChange={change(setPrescription, 'followUp')} placeholder="e.g. Review in 2 weeks" /></Field>
             <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
@@ -1065,6 +1076,7 @@ function RecordEditDialog({ editor, notify, onClose, onSaved }) {
               <Field label="Diagnosis"><Input required maxLength="2000" value={form.diagnosis} onChange={setField('diagnosis')} /></Field>
               {form.medicines.map((medicine, index) => <div key={index} className="grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2 sm:grid-cols-2">
                 {['name', 'dosage', 'frequency', 'duration', 'route', 'instructions'].map((field) => <Field key={field} label={`Medicine ${index + 1} ${field}`}><Input maxLength={field === 'instructions' ? 500 : field === 'route' ? 50 : 100} required={['name', 'dosage', 'frequency', 'duration'].includes(field)} value={medicine[field] || ''} onChange={(event) => setForm((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: event.target.value } : item) }))} /></Field>)}
+                <Field label={`Medicine ${index + 1} WHEN to take`}><Select value={medicine.timing || ''} onChange={(event) => setForm((value) => ({ ...value, medicines: value.medicines.map((item, itemIndex) => itemIndex === index ? { ...item, timing: event.target.value } : item) }))}><option value="">Not specified</option>{prescriptionTimings.map((timing) => <option key={timing}>{timing}</option>)}</Select></Field>
                 {form.medicines.length > 1 && <button type="button" className="justify-self-start text-xs text-rose-600 underline sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: value.medicines.filter((_, itemIndex) => itemIndex !== index) }))}>Remove medicine</button>}
               </div>)}
               <button type="button" disabled={form.medicines.length >= 30} className="justify-self-start text-sm font-semibold text-teal-700 underline disabled:opacity-50 dark:text-teal-300 sm:col-span-2" onClick={() => setForm((value) => ({ ...value, medicines: [...value.medicines, { name: '', dosage: '', frequency: '', duration: '', route: '', instructions: '' }] }))}>Add medicine</button>
@@ -1099,9 +1111,9 @@ function RecordEditDialog({ editor, notify, onClose, onSaved }) {
   );
 }
 
-function PreliminaryCheckForm({ patients, notify, onSaved }) {
+function PreliminaryCheckForm({ patients, appointments = [], notify, onSaved }) {
   const [form, setForm] = useState({
-    patientId: '',
+    patientId: '', appointmentId: '',
     heartRate: '',
     temperatureC: '',
     systolic: '',
@@ -1114,23 +1126,27 @@ function PreliminaryCheckForm({ patients, notify, onSaved }) {
     notes: '',
   });
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   const submit = async (event) => {
     event.preventDefault();
     if (saving) return;
     setSaving(true);
+    setError('');
     try {
       await api.post('/vitals', {
         ...form,
+        appointmentId: form.appointmentId,
         symptomOther: form.symptoms.includes('Other') ? form.symptomOther : '',
       });
       notify('Preliminary check recorded.');
       setForm({
-        patientId: '', heartRate: '', temperatureC: '', systolic: '', diastolic: '',
+        patientId: '', appointmentId: '', heartRate: '', temperatureC: '', systolic: '', diastolic: '',
         oxygenSaturation: '', heightCm: '', weightKg: '', symptoms: [], symptomOther: '', notes: '',
       });
       onSaved();
     } catch (error) {
+      setError(error.message);
       notify(error.message, 'error');
     } finally {
       setSaving(false);
@@ -1139,6 +1155,7 @@ function PreliminaryCheckForm({ patients, notify, onSaved }) {
   return (
     <Card title="Preliminary check" icon={Activity}>
       <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Today appointment"><Select required value={form.appointmentId} onChange={(event) => { const selected = appointments.find((appointment) => appointment._id === event.target.value); setForm((value) => ({ ...value, appointmentId: event.target.value, patientId: selected?.patientId?._id || '' })); }}><option value="">Select an appointment</option>{appointments.map((appointment) => <option key={appointment._id} value={appointment._id}>{appointment.patientId?.name} · Age {calculateAge(appointment.patientId?.dateOfBirth) ?? '—'} · {appointment.patientId?.uhid} · {formatAppointmentSlot(appointment.time)}</option>)}</Select></Field>
         <Field label="Patient"><Select required value={form.patientId} onChange={change('patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
         {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['oxygenSaturation', 'SpO₂ (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={form[key]} onChange={change(key)} /></Field>)}
         <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
@@ -1152,6 +1169,7 @@ function PreliminaryCheckForm({ patients, notify, onSaved }) {
           {form.symptoms.includes('Other') && <Field label="Describe other symptom (max 200 characters)"><Input maxLength="200" value={form.symptomOther} onChange={change('symptomOther')} required /></Field>}
         </fieldset>
         <Field label="Note (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={form.notes} onChange={change('notes')} /></Field>
+        {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300 sm:col-span-2">{error}</p>}
         <button disabled={saving || !patients.length} className="self-end rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save preliminary check'}</button>
       </form>
     </Card>
@@ -1243,7 +1261,7 @@ function StaffDashboard({ notify }) {
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
-      <PreliminaryCheckForm patients={patients} notify={notify} onSaved={refresh} />
+      <PreliminaryCheckForm patients={patients} appointments={appointments.filter((appointment) => appointment.date?.slice(0, 10) === localDateValue() && ['Booked', 'Scheduled', 'Checked in'].includes(appointment.status))} notify={notify} onSaved={refresh} />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Book an appointment" icon={CalendarDays}>
           <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
@@ -1257,7 +1275,7 @@ function StaffDashboard({ notify }) {
                 appointment.doctorId?._id === appointmentForm.doctorId
                 && appointment.date.slice(0, 10) === appointmentForm.date
                 && appointment.time === slot.time
-                && appointment.status === 'Scheduled'
+                && activeAppointmentStatuses.includes(appointment.status)
               )));
               return <option key={slot.time} value={slot.time} disabled={isBooked}>{isBooked ? `${slot.label} · booked` : slot.label}</option>;
             })}</Select><span className="text-xs font-normal text-slate-500">{appointmentForm.doctorId && appointmentForm.date ? 'Booked slots for this doctor and date are disabled.' : 'Select a doctor and date to check for existing bookings.'}</span></Field>
@@ -1293,6 +1311,7 @@ function ReceptionistDashboard({ notify }) {
   const error = fixedLoad.error || patientLoad.error;
   const appointments = data.appointments?.appointments || [];
   const patients = data.patients?.patients || [];
+  const todaysAppointments = appointments.filter((appointment) => appointment.date?.slice(0, 10) === localDateValue());
   const doctors = data.doctors?.doctors || [];
   const bills = data.billing?.bills || [];
   const refreshFixed = fixedLoad.refresh;
@@ -1306,6 +1325,8 @@ function ReceptionistDashboard({ notify }) {
   });
   const [reportPatientId, setReportPatientId] = useState('');
   const [report, setReport] = useState({ loading: false, error: '', prescription: null });
+  const [billingAppointmentId, setBillingAppointmentId] = useState('');
+  const [billingPrescription, setBillingPrescription] = useState(null);
   const reportRequest = useRef(0);
   const [billForm, setBillForm] = useState({
     patientId: '',
@@ -1346,6 +1367,32 @@ function ReceptionistDashboard({ notify }) {
     }
   };
 
+  const chooseBillingAppointment = async (appointmentId) => {
+    setBillingAppointmentId(appointmentId);
+    const appointment = appointments.find((item) => item._id === appointmentId);
+    if (!appointment) {
+      setBillingPrescription(null);
+      setBillForm((value) => ({ ...value, patientId: '', lineItems: [{ description: '', amount: '' }] }));
+      return;
+    }
+    try {
+      const { data: result } = await api.get(`/prescriptions?patientId=${encodeURIComponent(appointment.patientId?._id)}&limit=20`);
+      const prescription = result.prescriptions?.[0] || null;
+      setBillingPrescription(prescription);
+      setBillForm((value) => ({
+        ...value,
+        patientId: appointment.patientId?._id || '',
+        lineItems: prescription?.medicines?.map((medicine) => ({
+          description: `${medicine.name} · ${medicine.dosage} · ${medicine.frequency}${medicine.timing ? ` · ${medicine.timing}` : ''}`,
+          amount: '',
+        })) || [{ description: '', amount: '' }],
+      }));
+    } catch (requestError) {
+      setBillingPrescription(null);
+      notify(requestError.message, 'error');
+    }
+  };
+
   const bookAppointment = async (event) => {
     event.preventDefault();
     try {
@@ -1364,11 +1411,14 @@ function ReceptionistDashboard({ notify }) {
     try {
       await api.post('/billing', {
         patientId: billForm.patientId,
+        appointmentId: billingAppointmentId || undefined,
         lineItems: billForm.lineItems.map((item) => ({ ...item, amount: Number(item.amount) })),
         discount: billForm.discount === '' ? undefined : Number(billForm.discount),
         notes: billForm.notes,
       });
       notify('Bill issued. No payment has been processed.');
+      setBillingAppointmentId('');
+      setBillingPrescription(null);
       setBillForm({ patientId: '', lineItems: [{ description: 'Consultation fee', amount: '' }], discount: '', notes: '' });
       refresh();
     } catch (requestError) {
@@ -1393,16 +1443,6 @@ function ReceptionistDashboard({ notify }) {
       setSavingPayment(false);
     }
   };
-  const updateAppointment = async (id, values) => {
-    try {
-      await api.put(`/appointments/${id}`, values);
-      notify('Appointment updated.');
-      refreshFixed();
-    } catch (requestError) {
-      notify(requestError.message, 'error');
-    }
-  };
-
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Receptionist workspace" title="Patient services and billing" description="Register patients, book appointments, view doctor reports, and record simulated payments." icon={Receipt} />
@@ -1411,6 +1451,7 @@ function ReceptionistDashboard({ notify }) {
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <Card title="Book an appointment" icon={CalendarDays}>
         <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
+          {patients.find((patient) => patient._id === appointmentForm.patientId) && <p className="text-xs text-slate-500 sm:col-span-2">Selected patient: {patients.find((patient) => patient._id === appointmentForm.patientId).name} · Age {calculateAge(patients.find((patient) => patient._id === appointmentForm.patientId).dateOfBirth) ?? 'not recorded'} · {patients.find((patient) => patient._id === appointmentForm.patientId).uhid}</p>}
           <Field label="Patient"><Select required value={appointmentForm.patientId} onChange={change(setAppointmentForm, 'patientId')}><option value="">Select patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
           <Field label="Department"><Select value={appointmentForm.department} onChange={(event) => setAppointmentForm((value) => ({ ...value, department: event.target.value, doctorId: '' }))}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
           <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.filter((doctor) => doctor.specialization === appointmentForm.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></Field>
@@ -1421,7 +1462,7 @@ function ReceptionistDashboard({ notify }) {
               appointment.doctorId?._id === appointmentForm.doctorId
               && appointment.date.slice(0, 10) === appointmentForm.date
               && appointment.time === slot.time
-              && appointment.status === 'Scheduled'
+                && activeAppointmentStatuses.includes(appointment.status)
             )));
             return <option key={slot.time} value={slot.time} disabled={isBooked}>{isBooked ? `${slot.label} · booked` : slot.label}</option>;
           })}</Select></Field>
@@ -1445,6 +1486,10 @@ function ReceptionistDashboard({ notify }) {
                   </article>}
         </div>
       </Card>
+      <Card title={`Awaiting billing · ${appointments.filter((appointment) => appointment.status === 'Consulted').length}`} icon={Receipt}>
+        <Field label="Consulted appointment"><Select value={billingAppointmentId} onChange={(event) => chooseBillingAppointment(event.target.value)}><option value="">Select an appointment</option>{appointments.filter((appointment) => appointment.status === 'Consulted').map((appointment) => <option key={appointment._id} value={appointment._id}>{appointment.patientId?.name} · {formatAppointmentDate(appointment.date)} · {formatAppointmentSlot(appointment.time)}</option>)}</Select></Field>
+        {billingPrescription && <article className="mt-4 rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800/60"><p className="font-semibold">Prescription (read-only)</p><p className="mt-1">Diagnosis: {billingPrescription.diagnosis}</p><ul className="mt-2 list-disc pl-5">{billingPrescription.medicines.map((medicine, index) => <li key={`${billingPrescription._id}-${index}`}>{medicine.name} · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.timing ? ` · ${medicine.timing}` : ''}</li>)}</ul>{billingPrescription.advice?.suggestions?.length > 0 && <p className="mt-2">Advice: {billingPrescription.advice.suggestions.join(' · ')}</p>}</article>}
+      </Card>
       <Card title="Create bill" icon={Receipt}>
         <form onSubmit={createBill} className="grid gap-3">
           <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
@@ -1463,16 +1508,17 @@ function ReceptionistDashboard({ notify }) {
         </form>
       </Card>
       <Card title="Bills and payment" icon={Receipt}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills match this search.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="rounded-xl border border-slate-200 p-4 text-sm dark:border-slate-700">
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills match this search.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="printable-invoice rounded-xl border border-slate-200 p-4 text-sm dark:border-slate-700">
           <div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{bill.invoiceNumber} · {bill.patientId?.name} · {bill.status}</p><p className="font-bold">{formatCurrency(bill.totalPaise)}</p></div>
           <ul className="mt-2 space-y-1">{bill.lineItems?.length ? bill.lineItems.map((item, index) => <li key={`${bill._id}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{formatCurrency(item.amountPaise)}</span></li>) : <li>{bill.description}</li>}</ul>
           {bill.discountPaise > 0 && <p className="mt-1">Discount: −{formatCurrency(bill.discountPaise)}</p>}
           {bill.paymentMethod && <p className="mt-2">Payment: {bill.paymentMethod}{bill.paidAt ? ` · ${new Date(bill.paidAt).toLocaleString()}` : ''}</p>}
-          {bill.status === 'Unpaid' && <button type="button" className="mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
+          {bill.status === 'Unpaid' && <button type="button" className="no-print mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
+          <button type="button" className="no-print ml-2 mt-3 rounded-lg border px-3 py-2 text-xs font-semibold" onClick={() => window.print()}>Print invoice</button>
         </article>)}</div>}
       </Card>
-      <Card title={`Appointment queue · ${appointments.length}`} icon={CalendarDays}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3">{item.patientId?.name}</td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td>{item.doctorId?.name || 'Unassigned'}</td><td><Select aria-label={`Appointment status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</Select></td></tr>)}</tbody></table></div>}
+      <Card title={`Today's appointment queue · ${todaysAppointments.length}`} icon={CalendarDays}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : todaysAppointments.length === 0 ? <Empty>No appointments are booked for today.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{todaysAppointments.map((item) => <tr key={item._id}><td className="py-3">{item.patientId?.name}<span className="block text-xs text-slate-500">Age {calculateAge(item.patientId?.dateOfBirth) ?? '—'} · {item.patientId?.uhid}</span></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td>{item.doctorId?.name || 'Unassigned'}</td><td>{item.status}</td></tr>)}</tbody></table></div>}
       </Card>
       {payingBill && createPortal(
         <div role="dialog" aria-modal="true" aria-labelledby="payment-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
@@ -1743,5 +1789,7 @@ function AdminDashboard({ notify }) {
     </main>
   );
 }
+
+void AdminDashboard;
 
 export default App;

@@ -11,10 +11,12 @@ import Vital from './Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
 import {
   bloodGroups,
+  appointmentStatuses,
   departments,
   paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
+  prescriptionTimings,
   triageLevels,
   userRoles,
   wards,
@@ -178,7 +180,7 @@ test('scheduled appointments have a unique doctor and time-slot index', () => {
   ));
   assert.ok(slotIndex);
   assert.deepEqual(slotIndex[1].partialFilterExpression, {
-    status: 'Scheduled',
+    status: { $in: appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status)) },
     doctorId: { $type: 'objectId' },
   });
 });
@@ -230,6 +232,24 @@ test('prescription advice is defaulted and constrained to the shared suggestions
   assert.ok(invalid.errors['advice.suggestions.0']);
 });
 
+test('prescription medicine timing is constrained to the shared timing list', async () => {
+  const valid = new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Timing test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Once daily', duration: '5 days', timing: 'Before food' }],
+  });
+  assert.equal(await getValidationError(valid), null);
+  assert.ok(prescriptionTimings.includes(valid.medicines[0].timing));
+  const invalid = await getValidationError(new Prescription({
+    patientId: '507f1f77bcf86cd799439011',
+    doctorId: '507f1f77bcf86cd799439012',
+    diagnosis: 'Timing test',
+    medicines: [{ name: 'Medicine', dosage: '1 mg', frequency: 'Once daily', duration: '5 days', timing: 'With dinner' }],
+  }));
+  assert.ok(invalid.errors['medicines.0.timing']);
+});
+
 test('billing requires a patient, administrator, positive whole-paise amount, and description', async () => {
   const valid = new Billing({
     patientId: '507f1f77bcf86cd799439011',
@@ -239,6 +259,7 @@ test('billing requires a patient, administrator, positive whole-paise amount, an
   });
   assert.equal(await getValidationError(valid), null);
   assert.equal(valid.status, 'Unpaid');
+  assert.equal(valid.appointmentId, null);
   assert.equal(valid.paidAt, null);
   assert.deepEqual(Billing.schema.path('paymentMethod').enumValues, ['', ...paymentMethods]);
   assert.equal(valid.discountPaise, 0);

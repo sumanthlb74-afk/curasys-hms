@@ -92,8 +92,8 @@ async function api(path, { method = 'GET', token, body, sourceIp } = {}) {
   return { status: response.status, body: await response.json() };
 }
 
-async function login(email, password) {
-  return api('/api/auth/login', { method: 'POST', body: { email, password } });
+async function login(email, password, role) {
+  return api('/api/auth/login', { method: 'POST', body: { email, password, ...(role ? { role } : {}) } });
 }
 
 async function registerPatient(token, name, email) {
@@ -355,6 +355,8 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   const doctorLogin = await login('doctor@example.test', 'DoctorPassword1!');
   assert.equal(doctorLogin.status, 200);
   assert.equal(doctorLogin.body.user.mustChangePassword, true);
+  assert.equal((await login('doctor@example.test', 'DoctorPassword1!', 'receptionist')).status, 401);
+  assert.equal((await login('doctor@example.test', 'DoctorPassword1!', 'doctor')).status, 200);
   for (let attempt = 0; attempt < 6; attempt += 1) {
     assert.equal((await login('doctor@example.test', 'DoctorPassword1!')).status, 200);
   }
@@ -388,12 +390,12 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     token: adminToken,
     body: { specialization: 'Cardiology' },
   });
-  assert.equal(departmentChange.status, 200);
+  assert.equal(departmentChange.status, 403);
   assert.equal(await AuditLog.countDocuments({
     action: 'doctor.department_changed',
     entityId: secondDoctorCreation.body.doctor.id,
     actorRole: 'admin',
-  }), 1);
+  }), 0);
 
   const staffCreation = await api('/api/staff', {
     method: 'POST',
@@ -445,6 +447,12 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal((await api('/api/receptionists', { token: receptionistToken })).status, 403);
   assert.equal((await api('/api/clinical-notes', { token: receptionistToken })).status, 403);
   assert.equal((await api('/api/vitals', { token: receptionistToken })).status, 403);
+  assert.equal((await api('/api/users', { token: doctorToken })).status, 403);
+  assert.equal((await api(`/api/users/${doctorCreation.body.doctor.id}/reset-password`, {
+    method: 'POST',
+    token: staffToken,
+    body: { password: 'ShouldBeDenied1!' },
+  })).status, 403);
   assert.equal((await api('/api/doctors', {
     method: 'POST',
     token: staffToken,
@@ -584,7 +592,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     body: {
       patientId: doctorPatient.body.patient.id,
       doctorId: secondDoctorCreation.body.doctor.id,
-      department: 'Neurology',
+      department: 'Cardiology',
       date: new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10),
       time: '09:00',
       symptoms: 'Department mismatch',
@@ -622,7 +630,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     body: {
       patientId: staffPatient.body.patient.id,
       doctorId: secondDoctorCreation.body.doctor.id,
-      department: 'Cardiology',
+      department: 'Neurology',
       date,
       time: '11:00',
       symptoms: 'Neurology review',
@@ -640,6 +648,49 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     },
   });
   assert.equal(receptionistAppointment.status, 201);
+  const checkedIn = await api(`/api/appointments/${receptionistAppointment.body.appointment._id}`, {
+    method: 'PUT',
+    token: receptionistToken,
+    body: { status: 'Checked in' },
+  });
+  assert.equal(checkedIn.status, 200);
+  assert.equal(checkedIn.body.appointment.status, 'Checked in');
+  assert.equal((await api(`/api/appointments/${receptionistAppointment.body.appointment._id}`, {
+    method: 'PUT',
+    token: staffToken,
+    body: { status: 'Consulted' },
+  })).status, 409);
+  const nurseAppointmentCheck = await api('/api/vitals', {
+    method: 'POST',
+    token: staffToken,
+    body: {
+      appointmentId: receptionistAppointment.body.appointment._id,
+      patientId: receptionistPatient.body.patient.id,
+      heartRate: 74,
+      temperatureC: 36.8,
+      systolic: 118,
+      diastolic: 78,
+      oxygenSaturation: 99,
+      symptoms: ['Headache and body ache'],
+      notes: 'Preliminary check for today queue.',
+    },
+  });
+  assert.equal(nurseAppointmentCheck.status, 201);
+  const appointmentAfterCheck = await api('/api/appointments', { token: staffToken });
+  assert.equal(appointmentAfterCheck.body.appointments.find(({ _id }) => _id === receptionistAppointment.body.appointment._id).status, 'Vitals done');
+  const consultedPrescription = await api('/api/prescriptions', {
+    method: 'POST',
+    token: doctorToken,
+    body: {
+      appointmentId: receptionistAppointment.body.appointment._id,
+      patientId: receptionistPatient.body.patient.id,
+      diagnosis: 'Consultation after preliminary check',
+      medicines: [{ name: 'Consult medicine', dosage: '10 mg', frequency: 'Once daily', duration: '5 days', timing: 'After food' }],
+    },
+  });
+  assert.equal(consultedPrescription.status, 201);
+  const appointmentAfterConsultation = await api('/api/appointments', { token: doctorToken });
+  assert.equal(appointmentAfterConsultation.body.appointments.find(({ _id }) => _id === receptionistAppointment.body.appointment._id).status, 'Consulted');
   assert.equal((await api('/api/appointments/not-an-id', {
     method: 'PUT',
     token: staffToken,
@@ -707,6 +758,15 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
       diagnosis: 'Invalid advice',
       medicines: [{ name: 'Example medicine', dosage: '10 mg', frequency: 'Once daily', duration: '5 days' }],
       advice: { suggestions: ['Invented suggestion'], notes: '' },
+    },
+  })).status, 400);
+  assert.equal((await api('/api/prescriptions', {
+    method: 'POST',
+    token: doctorToken,
+    body: {
+      patientId: doctorPatient.body.patient.id,
+      diagnosis: 'Invalid timing',
+      medicines: [{ name: 'Example medicine', dosage: '10 mg', frequency: 'Once daily', duration: '5 days', timing: 'With dinner' }],
     },
   })).status, 400);
   assert.equal((await api('/api/vitals', {
@@ -935,7 +995,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
 
   const billOne = await api('/api/billing', {
     method: 'POST',
-    token: adminToken,
+    token: receptionistToken,
     body: {
       patientId: doctorPatient.body.patient.id,
       lineItems: [{ description: 'Consultation', amount: 125.5 }],
@@ -960,6 +1020,11 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(billOne.body.bill.lineItems[0].amountPaise, 12550);
   assert.equal(billTwo.status, 201);
   assert.equal(billTwo.body.bill.totalPaise, 19000);
+  assert.equal((await api('/api/billing', {
+    method: 'POST',
+    token: patientToken,
+    body: { patientId: doctorPatient.body.patient.id, lineItems: [{ description: 'Forbidden', amount: 1 }] },
+  })).status, 403);
   assert.notEqual(billOne.body.bill.invoiceNumber, billTwo.body.bill.invoiceNumber);
   await assert.rejects(Billing.create({
     patientId: doctorPatient.body.patient.id,
@@ -988,15 +1053,26 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(paidBill.body.bill.status, 'Paid');
   assert.equal(paidBill.body.bill.paymentMethod, 'UPI QR');
   assert.equal(String(paidBill.body.bill.paidBy), receptionistCreation.body.receptionist.id);
+  assert.equal((await api(`/api/billing/${billOne.body.bill._id}`, {
+    method: 'PUT',
+    token: receptionistToken,
+    body: { status: 'Paid', paymentMethod: 'Cash' },
+  })).status, 409);
   assert.equal((await api(`/api/billing/${billTwo.body.bill._id}`, {
     method: 'PUT',
     token: receptionistToken,
     body: { status: 'Void' },
   })).status, 403);
+  const voidedBill = await api(`/api/billing/${billTwo.body.bill._id}`, {
+    method: 'PUT',
+    token: adminToken,
+    body: { status: 'Void' },
+  });
+  assert.equal(voidedBill.status, 200);
+  assert.equal(voidedBill.body.bill.status, 'Void');
 
   const auditAsAdmin = await api('/api/audit', { token: adminToken });
-  assert.equal(auditAsAdmin.status, 200);
-  assert.ok(auditAsAdmin.body.items.some(({ action }) => action === 'patient.created'));
+  assert.equal(auditAsAdmin.status, 403);
 
   const reset = await api(`/api/patients/${doctorPatient.body.patient.id}/reset-password`, {
     method: 'POST',
@@ -1010,9 +1086,44 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(resetPatientLogin.status, 200);
   assert.equal(resetPatientLogin.body.user.mustChangePassword, true);
 
+  for (const [id, email, oldPassword, temporaryPassword] of [
+    [doctorCreation.body.doctor.id, 'doctor@example.test', 'DoctorPassword2!', 'DoctorReset3!'],
+    [staffCreation.body.staff.id, 'staff@example.test', 'StaffPassword2!', 'StaffReset3!'],
+    [receptionistCreation.body.receptionist.id, 'receptionist@example.test', 'ReceptionPassword2!', 'ReceptionReset3!'],
+    [doctorPatient.body.patient.id, 'doctor-patient@example.test', 'PatientPassword3!', 'PatientReset4!'],
+  ]) {
+    const adminReset = await api(`/api/users/${id}/reset-password`, {
+      method: 'POST',
+      token: adminToken,
+      body: { password: temporaryPassword },
+    });
+    assert.equal(adminReset.status, 200);
+    assert.equal(adminReset.body.temporaryPassword, temporaryPassword);
+    assert.equal(adminReset.body.user.mustChangePassword, true);
+    assert.equal((await login(email, oldPassword)).status, 401);
+    const resetLogin = await login(email, temporaryPassword);
+    assert.equal(resetLogin.status, 200);
+    assert.equal(resetLogin.body.user.mustChangePassword, true);
+  }
+
+  const deactivate = await api(`/api/users/${doctorPatient.body.patient.id}/active`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { isActive: false },
+  });
+  assert.equal(deactivate.status, 200);
+  assert.equal((await login('doctor-patient@example.test', 'PatientReset4!')).status, 401);
+  assert.equal((await api('/api/auth/me', { token: resetPatientLogin.body.token })).status, 401);
+  const reactivate = await api(`/api/users/${doctorPatient.body.patient.id}/active`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { isActive: true },
+  });
+  assert.equal(reactivate.status, 200);
+
   const preservedHistory = await User.findOne({ email: 'doctor-patient@example.test' }).lean();
   assert.ok(preservedHistory);
-  await api(`/api/patients/${preservedHistory._id}`, { method: 'DELETE', token: adminToken });
+  await api(`/api/users/${preservedHistory._id}/active`, { method: 'PATCH', token: adminToken, body: { isActive: false } });
   assert.ok(await User.exists({ _id: preservedHistory._id, isActive: false }));
   assert.equal(await ClinicalNote.countDocuments({ patientId: preservedHistory._id }), 1);
 });

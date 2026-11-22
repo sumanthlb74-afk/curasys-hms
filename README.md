@@ -1,6 +1,6 @@
 # Curasys HMS
 
-A React (Vite/Tailwind) frontend and Express REST API backed by MongoDB through Mongoose. All records are entered in the UI and fetched from the API; the application does not seed fake patients, appointments, doctors, or bed statistics.
+A React (Vite/Tailwind) frontend and Express REST API backed by MongoDB through Mongoose. Normal use enters records through the UI; an explicitly local-only demo seed is available for walkthroughs.
 
 > **Educational project only.** Use fictional data. This application has not been reviewed for real clinical use, privacy-law compliance, or production security.
 
@@ -32,7 +32,27 @@ Open the Vite local URL printed by the command (normally `http://localhost:5173/
 
 Initial administrator setup is available only while no administrator exists, using the private `ADMIN_REGISTRATION_KEY` from `server/.env`. The key must be at least 32 characters. After the first administrator is created, public setup closes by default; temporarily set `ADMIN_SETUP_ENABLED=true` on the API only when you need key-gated public setup for another administrator, then remove the setting. The setup tab is shown only while the API reports setup is open. An administrator can create additional administrator accounts from the dashboard. Each account needs an email address not used by another account. A unique database index protects concurrent bootstrap attempts. Public-route administrators keep the password they choose; administrator-created accounts must change their temporary password at first sign-in. Wrong keys receive a generic error. See [Lost administrator access](#lost-administrator-access) for the offline recovery command.
 
-Administrators use one **Create account** form to create administrators, doctors, medical staff (nurses), receptionists, and patients. The temporary password is shown once in a dialog and must be changed at first sign-in. Doctors, medical staff, and receptionists can register patients; patients can open `/patient-login` and use the login ID and temporary password provided by their care team. The patient-only sign-in page rejects non-patient accounts. No seeded demo login is available.
+Administrators use one **Create account** form to create administrators, doctors, medical staff (nurses), receptionists, and patients. The temporary password is shown once in a dialog and must be changed at first sign-in. Doctors, medical staff, and receptionists can register patients; patients can open `/patient-login` and use the login ID and temporary password provided by their care team. The patient-only sign-in page rejects non-patient accounts.
+
+### Local demo seed
+
+For a local or development database only, set `DEMO_SEED_PASSWORD` in the process environment and run `npm.cmd run seed:demo`. The script refuses `NODE_ENV=production`, is idempotent for the accounts below, creates one appointment for tomorrow at 09:00, and never prints the password. The password is intentionally not committed to this README; keep it in a local password manager or environment variable.
+
+| Demo role | Demo login ID |
+|---|---|
+| Administrator | `demo-admin@example.test` |
+| Doctor | `demo-doctor@example.test` |
+| Medical staff / nurse | `demo-nurse@example.test` |
+| Receptionist | `demo-receptionist@example.test` |
+| Patient | `demo-patient@example.test` (use `/patient-login`) |
+
+Example without putting a password in shell history:
+
+```powershell
+$env:DEMO_SEED_PASSWORD = Read-Host "Local demo password"
+npm.cmd run seed:demo
+Remove-Item Env:DEMO_SEED_PASSWORD
+```
 
 Receptionists can register patients and book appointments, read a patient's latest prescription as a doctor's report, issue itemized bills, and record simulated payments. The receptionist cannot access clinical notes or preliminary checks; only doctors and medical staff can access checks according to their permissions.
 
@@ -69,7 +89,7 @@ The repository includes a Render Blueprint (`render.yaml`) for both free service
 
 Render's free API service spins down after 15 minutes without traffic and can take about one minute to wake. This affects API requests (login and data loading), not the static frontend itself. The frontend allows up to 90 seconds for API requests so a cold start has time to complete. Keep the page open while it connects. While account or billing forms are submitting, do not submit again; if a timeout appears, refresh the dashboard and check for the created record before retrying.
 
-The API service needs `NODE_ENV=production`, `MONGODB_URI`, `JWT_SECRET` (at least 32 characters), `ADMIN_REGISTRATION_KEY`, and `CLIENT_ORIGIN=https://curasys-hms.onrender.com`. The Blueprint generates values for the two secrets. If the existing Render service has no `ADMIN_REGISTRATION_KEY`, add it under **curasys-hms-api → Environment**, save, and redeploy. Keep it only in the API environment; never put it in `VITE_*` variables or source code. To retrieve a generated key, reveal it in the API service's Environment page and enter it only in Administrator setup. The static service uses `VITE_API_BASE_URL=https://curasys-hms-api.onrender.com/api`. Render supplies `PORT`; clinic hours default to 08:00–20:00, and `HOSPITAL_TZ` defaults to `Asia/Kolkata`.
+The API service needs `NODE_ENV=production`, `MONGODB_URI`, `JWT_SECRET` (at least 32 characters), `ADMIN_REGISTRATION_KEY`, and `CLIENT_ORIGIN=https://curasys-hms.onrender.com`. The Blueprint generates values for the two secrets. If the existing Render service has no `ADMIN_REGISTRATION_KEY`, add it under **curasys-hms-api → Environment**, save, and redeploy. Keep it only in the API environment; never put it in `VITE_*` variables or source code. To retrieve a generated key, reveal it in the API service's Environment page and enter it only in Administrator setup. The static service uses `VITE_API_BASE_URL=https://curasys-hms-api.onrender.com/api`. Render supplies `PORT`; clinic hours default to 24-hour operation (00:00–24:00), and `HOSPITAL_TZ` defaults to `Asia/Kolkata`.
 
 The live URL is assigned by Render after the Blueprint deploys. Do not enter real patient information; this educational project is not approved for clinical use.
 
@@ -83,7 +103,7 @@ For a manual deployment, configure these settings from the repository root; the 
    - `NODE_ENV`: `production`.
    - `CLIENT_ORIGIN`: the full frontend origin, such as `https://curasys-hms.onrender.com`.
    - `HOSPITAL_TZ`: optional IANA time zone for appointment validation; defaults to `Asia/Kolkata`.
-   - `CLINIC_START_HOUR` and `CLINIC_END_HOUR`: optional 24-hour clock range; defaults to `8` and `20` (the end hour is exclusive).
+   - `CLINIC_START_HOUR` and `CLINIC_END_HOUR`: optional 24-hour clock range; defaults to `0` and `24` for hourly scheduling all day (the end hour is exclusive).
    - For a separately hosted frontend, also set `VITE_CLINIC_START_HOUR` and `VITE_CLINIC_END_HOUR` to the same values at build time.
    - `PORT`: usually supplied automatically by the hosting provider.
 3. For the API service, use `npm ci --omit=dev` and `npm start`. For the static frontend, use `npm ci --include=dev`, `npm run build`, and publish `dist`.
@@ -102,7 +122,7 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 - Receptionists can read the latest prescription report without access to doctor's private clinical notes, book appointments, create itemized bills, and record payment method and optional reference. Invoice numbers are atomic and unique; totals are recomputed server-side in paise. Only administrators can void bills and read all bills.
 - Patients can read only their own prescriptions and bills. They receive HTTP 403 for appointments, vitals, and clinical notes; their portal displays only prescriptions and bills, plus their name and UHID header and password controls.
 - Medical staff coordinate appointments and bed assignments without access to prescriptions or doctor's notes. Deactivated patient accounts retain their historical records.
-- Appointment scheduling supports every calendar day with configurable one-hour slots, defaulting to 08:00–20:00. Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
+- Appointment scheduling supports every calendar day with configurable one-hour slots, defaulting to 24-hour operation (00:00–24:00). Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
 - Admin live bed counts, patient directory, staff accounts, bed creation/assignment/discharge, and appointment overview.
 - Administrator-only audit log records authentication outcomes and key patient, billing, note, prescription, and vital actions. Patient account deactivation retains data and records the administrator and timestamp.
 - Patient, appointment, vital, billing, prescription, and visit-note list APIs support `page`, `limit` (maximum 200), and patient search via `q`; the patient directory and pickers expose search and paging.
@@ -143,6 +163,8 @@ These are API-side permissions and ownership filters; frontend route guards are 
 3. Sign in as the receptionist to book an appointment, view the doctor's prescription report, issue a bill, and try each simulated payment method.
 4. Sign in as the patient to change the temporary password and review only prescriptions and bills. Do not enter real patient or payment information.
 
+Flow: `Receptionist books appointment → Nurse records preliminary check → Doctor edits check and prescribes → Receptionist issues bill and records simulated payment → Patient reads own prescription and bill`.
+
 ## Checks
 
 ```powershell
@@ -150,6 +172,7 @@ npm.cmd run lint
 npm.cmd test
 npm.cmd run build
 npm.cmd audit --audit-level=moderate
+npm.cmd run test:e2e
 ```
 
 API integration tests use a disposable local database, never Atlas. The GitHub CI workflow starts a local MongoDB service and sets this variable automatically. To run the same suite locally, start MongoDB and run:
@@ -161,3 +184,15 @@ Remove-Item Env:MONGODB_TEST_URI
 ```
 
 The test runner creates a uniquely named database from the `_test` database name and drops only that test database when the suite finishes. Do not set `MONGODB_TEST_URI` to Atlas or a database containing real records.
+
+The Playwright smoke suite uses headless Chromium, checks the five role dashboards at 1280×720 and 390×844, captures screenshots under ignored `test-results/`, checks page overflow, logout, browser-console errors, and failed/5xx network requests. Seed the local demo accounts first and set `E2E_PASSWORD` to the same process-local value as `DEMO_SEED_PASSWORD`; neither variable is committed.
+
+### Render deployment checklist
+
+Set these API environment variable names in Render: `MONGODB_URI`, `JWT_SECRET`, `ADMIN_REGISTRATION_KEY`, `CLIENT_ORIGIN`, `NODE_ENV`, `HOSPITAL_TZ` (optional), `CLINIC_START_HOUR` (optional), `CLINIC_END_HOUR` (optional), and `PORT` (usually supplied by Render). Set this static-site variable: `VITE_API_BASE_URL`.
+
+1. Push `post-review-fixes` and open a pull request into `main`; merge only after CI passes and your explicit review.
+2. In Render, deploy the Blueprint or connect the repository; enter the production Atlas URI only in the API service dashboard.
+3. Confirm `CLIENT_ORIGIN` exactly matches `https://curasys-hms.onrender.com`, leave `ADMIN_SETUP_ENABLED` unset after the first administrator, and wait for both services to deploy.
+4. Verify `https://curasys-hms-api.onrender.com/api/health` returns HTTP 200 with database `connected`, then open the static-site URL.
+5. Render auto-deploys `main`; the API and frontend may rebuild for several minutes, and the first request after sleep can take about a minute.
