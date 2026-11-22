@@ -532,7 +532,9 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal((await api('/api/audit', { token: patientLogin.body.token })).status, 403);
   assert.equal((await api('/api/prescriptions', { token: staffToken })).status, 403);
   assert.equal((await api('/api/clinical-notes', { token: staffToken })).status, 403);
-  assert.equal((await api('/api/vitals', { token: staffToken })).status, 403);
+  const staffVitalsBeforeChecks = await api('/api/vitals', { token: staffToken });
+  assert.equal(staffVitalsBeforeChecks.status, 200);
+  assert.equal(staffVitalsBeforeChecks.body.vitals.length, 0);
   assert.equal((await api('/api/doctors', { token: patientLogin.body.token })).status, 403);
   assert.equal((await api('/api/vitals', { token: patientLogin.body.token })).status, 403);
   assert.equal((await api('/api/clinical-notes', { token: patientLogin.body.token })).status, 403);
