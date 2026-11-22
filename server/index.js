@@ -27,6 +27,7 @@ import {
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
   triageLevels,
@@ -394,7 +395,7 @@ app.get('/api/health', asyncRoute(async (_request, response) => {
     response.status(503).json({ status: 'degraded' });
     return;
   }
-  response.json({ status: 'ok' });
+  response.json({ status: 'ok', database: 'connected' });
 }));
 
 app.use('/api', apiLimiter);
@@ -552,9 +553,9 @@ app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, r
   response.json({ token: signToken(user), user: publicUser(user) });
 }));
 
-app.get('/api/doctors', authenticate, allow('staff', 'admin'), asyncRoute(async (_request, response) => {
+app.get('/api/doctors', authenticate, allow('staff', 'receptionist', 'admin'), asyncRoute(async (_request, response) => {
   const doctors = await User.find({ role: 'doctor', isActive: { $ne: false } })
-    .select('name specialization')
+    .select('name email phone specialization')
     .sort({ name: 1 })
     .lean();
   response.json({ doctors });
@@ -606,7 +607,7 @@ app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (requ
   response.json({ doctor: publicUser(doctor) });
 }));
 
-app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = { role: 'patient', isActive: { $ne: false } };
@@ -615,7 +616,7 @@ app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncR
     const pattern = escapedRegex(pagination.q);
     filter.$or = [{ name: pattern }, { uhid: pattern }, { email: pattern }];
   }
-  const patientFields = request.user.role === 'staff'
+  const patientFields = ['staff', 'receptionist'].includes(request.user.role)
     ? 'name email uhid phone'
     : 'name email uhid phone dateOfBirth sex bloodGroup address emergencyContact allergies chronicConditions currentMedications heightCm weightKg';
   const { items, total, page } = await listPage(User, filter, pagination, {
@@ -623,7 +624,7 @@ app.get('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncR
     select: patientFields,
   });
   const patients = items;
-  if (request.user.role === 'doctor' || request.user.role === 'staff') {
+  if (request.user.role === 'doctor' || request.user.role === 'staff' || request.user.role === 'receptionist') {
     await audit(request, { action: 'patients.listed', entityType: 'patient' });
   }
   response.json({ patients, items: patients, total, page });
@@ -649,7 +650,7 @@ app.get('/api/audit', authenticate, allow('admin'), asyncRoute(async (request, r
   response.json({ items, total, page });
 }));
 
-app.post('/api/patients', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const {
     name, email, password, phone, dateOfBirth, sex, bloodGroup, address, emergencyContact,
     allergies, chronicConditions, currentMedications, heightCm, weightKg,
@@ -852,7 +853,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
   response.json({ success: true });
 }));
 
-app.get('/api/appointments', authenticate, asyncRoute(async (request, response) => {
+app.get('/api/appointments', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient'
@@ -868,7 +869,7 @@ app.get('/api/appointments', authenticate, asyncRoute(async (request, response) 
   response.json({ appointments: result.items, ...result });
 }));
 
-app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/appointments', authenticate, allow('staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const { doctorId, department, date, time, symptoms, triage } = request.body ?? {};
   const patientId = request.body?.patientId;
   if (
@@ -916,7 +917,7 @@ app.post('/api/appointments', authenticate, allow('staff', 'admin'), asyncRoute(
   response.status(201).json({ appointment });
 }));
 
-app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const { status, triage, doctorId } = request.body ?? {};
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid appointment ID.' });
@@ -993,7 +994,7 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'admin')
   response.json({ appointment });
 }));
 
-app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff'), asyncRoute(async (request, response) => {
+app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff', 'receptionist'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid appointment ID.' });
     return;
@@ -1136,7 +1137,7 @@ app.delete('/api/beds/:id', authenticate, allow('admin'), asyncRoute(async (requ
   response.json({ success: true });
 }));
 
-app.get('/api/billing', authenticate, allow('patient', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/billing', authenticate, allow('patient', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient' ? { patientId: request.user.id } : {};
@@ -1144,43 +1145,75 @@ app.get('/api/billing', authenticate, allow('patient', 'admin'), asyncRoute(asyn
   const result = await listPage(Billing, filter, pagination, {
     sort: { createdAt: -1 },
     populate: [['patientId', 'name uhid'], ['createdBy', 'name']],
+    select: request.user.role === 'patient'
+      ? 'invoiceNumber totalPaise lineItems discountPaise status paymentMethod createdAt'
+      : undefined,
   });
   response.json({ bills: result.items, ...result });
 }));
 
-app.post('/api/billing', authenticate, allow('admin'), asyncRoute(async (request, response) => {
-  const { patientId, totalAmount, description } = request.body ?? {};
-  const totalPaise = typeof totalAmount === 'number' ? Math.round(totalAmount * 100) : NaN;
+app.post('/api/billing', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
+  const { patientId, lineItems, discount, notes } = request.body ?? {};
+  const validAmount = (value) => typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 100_000_000
+    && Math.abs(value * 100 - Math.round(value * 100)) <= 1e-7;
+  const itemAmounts = Array.isArray(lineItems)
+    ? lineItems.map((item) => validAmount(item?.amount) ? Math.round(item.amount * 100) : NaN)
+    : [];
+  const subtotalPaise = itemAmounts.reduce((total, amount) => total + amount, 0);
+  const discountPaise = discount === undefined || discount === '' ? 0
+    : validAmount(discount) ? Math.round(discount * 100) : NaN;
+  const totalPaise = subtotalPaise - discountPaise;
   if (
     !validObjectId(patientId)
     || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })
-    || typeof totalAmount !== 'number'
-    || !Number.isFinite(totalAmount)
-    || totalAmount <= 0
-    || totalAmount > 100_000_000
-    || Math.abs(totalAmount * 100 - totalPaise) > 1e-7
+    || !Array.isArray(lineItems) || lineItems.length < 1 || lineItems.length > 50
+    || lineItems.some((item) => !item || typeof item !== 'object'
+      || typeof item.description !== 'string' || !item.description.trim() || item.description.length > 250)
+    || itemAmounts.some((amount) => !Number.isSafeInteger(amount) || amount < 1)
+    || !Number.isFinite(discountPaise) || discountPaise < 0 || discountPaise >= subtotalPaise
     || !Number.isSafeInteger(totalPaise)
-    || typeof description !== 'string'
-    || !description.trim()
-    || description.trim().length > 1000
+    || totalPaise < 1 || totalPaise > 10_000_000_000
+    || (notes !== undefined && (typeof notes !== 'string' || notes.length > 1000))
   ) {
-    response.status(400).json({ error: 'Select a patient and enter a valid total bill and description.' });
+    response.status(400).json({ error: 'Select a patient and enter valid line items, discount, and notes.' });
     return;
   }
   const bill = await Billing.create({
     patientId,
     createdBy: request.user.id,
     totalPaise,
-    description: description.trim(),
+    description: lineItems.map(({ description: itemDescription }) => itemDescription.trim()).join(', ').slice(0, 1000),
+    lineItems: lineItems.map((item, index) => ({
+      description: item.description.trim(),
+      amountPaise: itemAmounts[index],
+    })),
+    discountPaise,
+    notes: notes || '',
     invoiceNumber: await nextInvoiceNumber(),
   });
   await audit(request, { action: 'billing.issued', entityType: 'billing', entityId: bill._id, patientId });
   response.status(201).json({ bill });
 }));
 
-app.put('/api/billing/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
-  if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(request.body?.status)) {
+app.put('/api/billing/:id', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
+  const { status, paymentMethod, paymentReference = '' } = request.body ?? {};
+  if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(status)) {
     response.status(400).json({ error: 'Choose a valid bill and status.' });
+    return;
+  }
+  if (status === 'Void' && request.user.role !== 'admin') {
+    response.status(403).json({ error: 'Only administrators can void bills.' });
+    return;
+  }
+  if (status === 'Paid' && (
+    !paymentMethods.includes(paymentMethod)
+    || typeof paymentReference !== 'string'
+    || paymentReference.length > 200
+  )) {
+    response.status(400).json({ error: 'Choose a valid payment method and optional reference.' });
     return;
   }
   const bill = await Billing.findById(request.params.id);
@@ -1192,21 +1225,40 @@ app.put('/api/billing/:id', authenticate, allow('admin'), asyncRoute(async (requ
     response.status(409).json({ error: 'Only unpaid bills can be marked paid or voided.' });
     return;
   }
-  bill.status = request.body.status;
-  bill.paidAt = request.body.status === 'Paid' ? new Date() : null;
+  bill.status = status;
+  bill.paidAt = status === 'Paid' ? new Date() : null;
+  if (status === 'Paid') {
+    bill.paymentMethod = paymentMethod;
+    bill.paymentReference = paymentReference.trim();
+    bill.paidBy = request.user.id;
+  }
   await bill.save();
   await audit(request, { action: `billing.${bill.status.toLowerCase()}`, entityType: 'billing', entityId: bill._id, patientId: bill.patientId });
   response.json({ bill });
 }));
 
-app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
+  if (request.user.role === 'receptionist' && !validObjectId(request.query.patientId)) {
+    response.status(400).json({ error: 'Choose a patient to view their doctor report.' });
+    return;
+  }
   const filter = request.user.role === 'patient'
     ? { patientId: request.user.id }
     : request.user.role === 'doctor'
       ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
-      : {};
+      : request.user.role === 'receptionist'
+        ? { patientId: request.query.patientId }
+        : {};
+  if (request.user.role === 'receptionist' && !await User.exists({
+    _id: request.query.patientId,
+    role: 'patient',
+    isActive: { $ne: false },
+  })) {
+    response.status(404).json({ error: 'Patient not found.' });
+    return;
+  }
   await addPatientSearch(filter, pagination.q);
   const result = await listPage(Prescription, filter, pagination, {
     sort: { createdAt: -1 },

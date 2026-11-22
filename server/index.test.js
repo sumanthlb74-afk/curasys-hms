@@ -243,8 +243,8 @@ test('configured administrator keys shorter than 32 characters prevent startup',
   }
 });
 
-test('public registration rejects staff and patient account creation', async () => {
-  for (const role of ['staff', 'patient']) {
+test('public registration rejects staff, receptionist, and patient account creation', async () => {
+  for (const role of ['staff', 'receptionist', 'patient']) {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: registrationHeaders(),

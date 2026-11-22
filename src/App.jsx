@@ -5,12 +5,14 @@ import {
   Activity, BedDouble, CalendarDays, Check, ClipboardList, LogOut, Moon, Plus, Receipt, ShieldCheck,
   Stethoscope, Sun, Users, X,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import api from './api.js';
 import {
   bloodGroups,
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
+  paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
   triageLevels,
@@ -21,6 +23,7 @@ const rolePaths = {
   patient: '/patient-portal',
   doctor: '/doctor-dashboard',
   staff: '/medical-staff',
+  receptionist: '/receptionist-dashboard',
   admin: '/admin-command-center',
 };
 const configuredClinicStartHour = Number(import.meta.env.VITE_CLINIC_START_HOUR ?? defaultClinicStartHour);
@@ -119,10 +122,6 @@ function emptyPatientForm() {
 
 function formatCurrency(paise) {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'INR' }).format(paise / 100);
-}
-
-function newBillForm() {
-  return { patientId: '', totalAmount: '500', description: 'Consultation fee' };
 }
 
 function useTheme() {
@@ -1201,6 +1200,7 @@ function StaffDashboard({ notify }) {
     { key: 'appointments', path: '/appointments' },
     { key: 'doctors', path: '/doctors' },
     { key: 'beds', path: '/beds' },
+    { key: 'vitals', path: '/vitals' },
   ]);
   const patientLoad = useLoad(notify, [
     { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
@@ -1306,6 +1306,225 @@ function StaffDashboard({ notify }) {
       <Card title={`Bed assignments · ${beds.length}`} icon={BedDouble}>
         {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : beds.length === 0 ? <Empty>No beds are configured yet.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th scope="col" className="pb-3">Bed</th><th scope="col" className="pb-3">Ward</th><th scope="col" className="pb-3">Patient</th><th scope="col" className="pb-3">Status</th><th scope="col" className="pb-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{beds.map((bed) => <tr key={bed._id}><td className="py-3 font-semibold">{bed.bedNumber}</td><td>{bed.ward}</td><td><Select aria-label={`Patient assigned to bed ${bed.bedNumber}`} value={assignment[bed._id] ?? bed.patientId?._id ?? ''} onChange={(event) => setAssignment((value) => ({ ...value, [bed._id]: event.target.value }))}><option value="">Unassigned</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></td><td><Select aria-label={`Status of bed ${bed.bedNumber}`} value={bed.status} onChange={(event) => updateBed(bed, event.target.value, assignment[bed._id] ?? bed.patientId?._id ?? null)}>{['Available', 'Occupied', 'Maintenance'].map((status) => <option key={status}>{status}</option>)}</Select></td><td><button type="button" onClick={() => updateBed(bed, null, assignment[bed._id] || null)} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 dark:bg-teal-950 dark:text-teal-300">Save assignment</button></td></tr>)}</tbody></table></div>}
       </Card>
+    </main>
+  );
+}
+
+function ReceptionistDashboard({ notify }) {
+  const [patientSearch, setPatientSearch] = useState('');
+  const [patientPage, setPatientPage] = useState(1);
+  const debouncedPatientSearch = useDebouncedValue(patientSearch);
+  const fixedLoad = useLoad(notify, [
+    { key: 'appointments', path: '/appointments' },
+    { key: 'doctors', path: '/doctors' },
+    { key: 'billing', path: `/billing?page=1&limit=100&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const patientLoad = useLoad(notify, [
+    { key: 'patients', path: `/patients?page=${patientPage}&limit=50&q=${encodeURIComponent(debouncedPatientSearch)}` },
+  ]);
+  const data = { ...fixedLoad.data, ...patientLoad.data };
+  const loading = fixedLoad.loading || patientLoad.loading;
+  const error = fixedLoad.error || patientLoad.error;
+  const appointments = data.appointments?.appointments || [];
+  const patients = data.patients?.patients || [];
+  const doctors = data.doctors?.doctors || [];
+  const bills = data.billing?.bills || [];
+  const refreshFixed = fixedLoad.refresh;
+  const refreshPatients = patientLoad.refresh;
+  const refresh = useCallback(() => {
+    refreshFixed();
+    refreshPatients();
+  }, [refreshFixed, refreshPatients]);
+  const [appointmentForm, setAppointmentForm] = useState({
+    patientId: '', doctorId: '', department: departments[0], date: '', time: '', symptoms: '', triage: 'OPD Routine',
+  });
+  const [reportPatientId, setReportPatientId] = useState('');
+  const [report, setReport] = useState({ loading: false, error: '', prescription: null });
+  const reportRequest = useRef(0);
+  const [billForm, setBillForm] = useState({
+    patientId: '',
+    lineItems: [{ description: 'Consultation fee', amount: '500' }],
+    discount: '',
+    notes: '',
+  });
+  const [creatingBill, setCreatingBill] = useState(false);
+  const [payingBill, setPayingBill] = useState(null);
+  const [paymentForm, setPaymentForm] = useState({ paymentMethod: 'Cash', paymentReference: '' });
+  const [savingPayment, setSavingPayment] = useState(false);
+  const change = (setter, key) => (event) => setter((value) => ({ ...value, [key]: event.target.value }));
+  const reportPatient = patients.find((patient) => patient._id === reportPatientId);
+  const subtotalPaise = billForm.lineItems.reduce((sum, item) => {
+    const amount = Number(item.amount);
+    return sum + (Number.isFinite(amount) ? Math.round(amount * 100) : 0);
+  }, 0);
+  const discountPaise = Number.isFinite(Number(billForm.discount)) ? Math.round(Number(billForm.discount || 0) * 100) : 0;
+
+  const chooseReportPatient = async (patientId) => {
+    setReportPatientId(patientId);
+    const requestId = reportRequest.current + 1;
+    reportRequest.current = requestId;
+    if (!patientId) {
+      setReport({ loading: false, error: '', prescription: null });
+      return;
+    }
+    setReport({ loading: true, error: '', prescription: null });
+    try {
+      const { data: result } = await api.get(`/prescriptions?patientId=${encodeURIComponent(patientId)}&limit=20`);
+      if (reportRequest.current === requestId) {
+        setReport({ loading: false, error: '', prescription: result.prescriptions?.[0] || null });
+      }
+    } catch (requestError) {
+      if (reportRequest.current === requestId) {
+        setReport({ loading: false, error: requestError.message, prescription: null });
+      }
+    }
+  };
+
+  const bookAppointment = async (event) => {
+    event.preventDefault();
+    try {
+      await api.post('/appointments', appointmentForm);
+      notify('Appointment booked.');
+      setAppointmentForm((value) => ({ ...value, symptoms: '', date: '', time: '' }));
+      refresh();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    }
+  };
+  const createBill = async (event) => {
+    event.preventDefault();
+    if (creatingBill) return;
+    setCreatingBill(true);
+    try {
+      await api.post('/billing', {
+        patientId: billForm.patientId,
+        lineItems: billForm.lineItems.map((item) => ({ ...item, amount: Number(item.amount) })),
+        discount: billForm.discount === '' ? undefined : Number(billForm.discount),
+        notes: billForm.notes,
+      });
+      notify('Bill issued. No payment has been processed.');
+      setBillForm({ patientId: '', lineItems: [{ description: 'Consultation fee', amount: '' }], discount: '', notes: '' });
+      refresh();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    } finally {
+      setCreatingBill(false);
+    }
+  };
+  const recordPayment = async (event) => {
+    event.preventDefault();
+    if (!payingBill || savingPayment) return;
+    setSavingPayment(true);
+    try {
+      await api.put(`/billing/${payingBill._id}`, { status: 'Paid', ...paymentForm });
+      notify(`Payment method recorded for ${payingBill.invoiceNumber}. This is a demo only.`);
+      setPayingBill(null);
+      setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' });
+      refreshFixed();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    } finally {
+      setSavingPayment(false);
+    }
+  };
+  const updateAppointment = async (id, values) => {
+    try {
+      await api.put(`/appointments/${id}`, values);
+      notify('Appointment updated.');
+      refreshFixed();
+    } catch (requestError) {
+      notify(requestError.message, 'error');
+    }
+  };
+
+  return (
+    <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
+      <PageTitle eyebrow="Receptionist workspace" title="Patient services and billing" description="Register patients, book appointments, view doctor reports, and record simulated payments." icon={Receipt} />
+      <Field label="Search patients by name, UHID, or email"><Input value={patientSearch} onChange={(event) => { setPatientSearch(event.target.value); setPatientPage(1); }} placeholder="Search patient directory" /></Field>
+      <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
+      <PatientRegistrationForm notify={notify} onCreated={refresh} />
+      <Card title="Book an appointment" icon={CalendarDays}>
+        <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
+          <Field label="Patient"><Select required value={appointmentForm.patientId} onChange={change(setAppointmentForm, 'patientId')}><option value="">Select patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+          <Field label="Department"><Select value={appointmentForm.department} onChange={(event) => setAppointmentForm((value) => ({ ...value, department: event.target.value, doctorId: '' }))}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
+          <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.filter((doctor) => doctor.specialization === appointmentForm.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></Field>
+          <Field label="Triage"><Select value={appointmentForm.triage} onChange={change(setAppointmentForm, 'triage')}>{triageLevels.map((item) => <option key={item}>{item}</option>)}</Select></Field>
+          <Field label="Appointment date"><Input type="date" min={localDateValue()} value={appointmentForm.date} onChange={change(setAppointmentForm, 'date')} required /></Field>
+          <Field label="One-hour slot"><Select value={appointmentForm.time} onChange={change(setAppointmentForm, 'time')} required><option value="">Select a time</option>{appointmentSlots.map((slot) => {
+            const isBooked = Boolean(appointmentForm.doctorId && appointmentForm.date && appointments.some((appointment) => (
+              appointment.doctorId?._id === appointmentForm.doctorId
+              && appointment.date.slice(0, 10) === appointmentForm.date
+              && appointment.time === slot.time
+              && appointment.status === 'Scheduled'
+            )));
+            return <option key={slot.time} value={slot.time} disabled={isBooked}>{isBooked ? `${slot.label} · booked` : slot.label}</option>;
+          })}</Select></Field>
+          <Field label="Symptoms"><Textarea rows="2" maxLength="2000" value={appointmentForm.symptoms} onChange={change(setAppointmentForm, 'symptoms')} required /></Field>
+          <button className="self-end rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white">Book visit</button>
+        </form>
+      </Card>
+      <Card title="Doctor's report" icon={ClipboardList}>
+        <Field label="Choose patient"><Select value={reportPatientId} onChange={(event) => chooseReportPatient(event.target.value)}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+        <div className="mt-4">
+          {report.loading ? <p className="text-sm text-slate-500">Loading latest prescription…</p>
+            : report.error ? <p role="alert" className="text-sm text-rose-700">{report.error}</p>
+              : !reportPatientId ? <Empty>Choose a patient to view the latest doctor report.</Empty>
+                : !report.prescription ? <Empty>No prescription is available for this patient.</Empty>
+                  : <article className="rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800/60">
+                    <p className="text-xs text-slate-500">{reportPatient?.name} · {reportPatient?.uhid} · {new Date(report.prescription.createdAt).toLocaleString()}</p>
+                    <p className="mt-2 font-semibold">Diagnosis: {report.prescription.diagnosis}</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">{report.prescription.medicines.map((medicine, index) => <li key={`${report.prescription._id}-${index}`}>{medicine.name} · {medicine.dosage} · {medicine.frequency} · {medicine.duration}</li>)}</ul>
+                    {report.prescription.advice?.suggestions?.length > 0 && <p className="mt-3"><strong>Lifestyle advice:</strong> {report.prescription.advice.suggestions.join(' · ')}</p>}
+                    {report.prescription.advice?.notes && <p className="mt-1 whitespace-pre-wrap">{report.prescription.advice.notes}</p>}
+                  </article>}
+        </div>
+      </Card>
+      <Card title="Create bill" icon={Receipt}>
+        <form onSubmit={createBill} className="grid gap-3">
+          <Field label="Patient"><Select required value={billForm.patientId} onChange={change(setBillForm, 'patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
+          <div className="grid gap-3">
+            {billForm.lineItems.map((item, index) => <div key={index} className="grid gap-3 sm:grid-cols-[1fr_12rem_auto]">
+              <Field label={`Line item ${index + 1} description`}><Input maxLength="250" required value={item.description} onChange={(event) => setBillForm((value) => ({ ...value, lineItems: value.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, description: event.target.value } : line) }))} /></Field>
+              <Field label="Amount (INR)"><Input type="number" min="0.01" max="100000000" step="0.01" required value={item.amount} onChange={(event) => setBillForm((value) => ({ ...value, lineItems: value.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, amount: event.target.value } : line) }))} /></Field>
+              <button type="button" disabled={billForm.lineItems.length <= 1} className="self-end rounded-lg border px-3 py-2 text-sm disabled:opacity-40" onClick={() => setBillForm((value) => ({ ...value, lineItems: value.lineItems.filter((_, lineIndex) => lineIndex !== index) }))}>Remove</button>
+            </div>)}
+          </div>
+          <button type="button" disabled={billForm.lineItems.length >= 50} className="justify-self-start text-sm font-semibold text-teal-700 underline dark:text-teal-300" onClick={() => setBillForm((value) => ({ ...value, lineItems: [...value.lineItems, { description: '', amount: '' }] }))}>Add line item</button>
+          <Field label="Optional discount (INR)"><Input type="number" min="0" max="100000000" step="0.01" value={billForm.discount} onChange={change(setBillForm, 'discount')} /></Field>
+          <Field label="Notes"><Textarea rows="2" maxLength="1000" value={billForm.notes} onChange={change(setBillForm, 'notes')} /></Field>
+          <p className="font-semibold">Estimated total: {formatCurrency(Math.max(0, subtotalPaise - discountPaise))} <span className="text-xs font-normal text-slate-500">(server computes the saved total)</span></p>
+          <button disabled={creatingBill} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{creatingBill ? 'Issuing bill…' : 'Issue bill'}</button>
+        </form>
+      </Card>
+      <Card title="Bills and payment" icon={Receipt}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills match this search.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="rounded-xl border border-slate-200 p-4 text-sm dark:border-slate-700">
+          <div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{bill.invoiceNumber} · {bill.patientId?.name} · {bill.status}</p><p className="font-bold">{formatCurrency(bill.totalPaise)}</p></div>
+          <ul className="mt-2 space-y-1">{bill.lineItems?.length ? bill.lineItems.map((item, index) => <li key={`${bill._id}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{formatCurrency(item.amountPaise)}</span></li>) : <li>{bill.description}</li>}</ul>
+          {bill.discountPaise > 0 && <p className="mt-1">Discount: −{formatCurrency(bill.discountPaise)}</p>}
+          {bill.paymentMethod && <p className="mt-2">Payment: {bill.paymentMethod}{bill.paidAt ? ` · ${new Date(bill.paidAt).toLocaleString()}` : ''}</p>}
+          {bill.status === 'Unpaid' && <button type="button" className="mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
+        </article>)}</div>}
+      </Card>
+      <Card title={`Appointment queue · ${appointments.length}`} icon={CalendarDays}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3">{item.patientId?.name}</td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td>{item.doctorId?.name || 'Unassigned'}</td><td><Select aria-label={`Appointment status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</Select></td></tr>)}</tbody></table></div>}
+      </Card>
+      {payingBill && createPortal(
+        <div role="dialog" aria-modal="true" aria-labelledby="payment-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">
+          <div className="grid min-h-full place-items-center">
+            <section className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6 dark:bg-slate-900">
+              <h2 id="payment-title" className="text-lg font-bold">Record simulated payment</h2>
+              <p className="mt-1 text-sm text-slate-500">{payingBill.invoiceNumber} · {formatCurrency(payingBill.totalPaise)}</p>
+              <form onSubmit={recordPayment} className="mt-4 grid gap-3">
+                <Field label="Payment method"><Select value={paymentForm.paymentMethod} onChange={change(setPaymentForm, 'paymentMethod')}>{paymentMethods.map((method) => <option key={method}>{method}</option>)}</Select></Field>
+                {paymentForm.paymentMethod === 'UPI QR' && <div className="grid justify-items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-center text-amber-950"><p className="font-bold">DEMO ONLY: no real money is moved</p><QRCodeSVG value={`CURASYS DEMO PAYMENT ${payingBill.invoiceNumber}`} size={180} level="M" /></div>}
+                <Field label="Optional reference text (no card, CVV, UPI, or bank details)"><Input maxLength="200" value={paymentForm.paymentReference} onChange={change(setPaymentForm, 'paymentReference')} /></Field>
+                <div className="flex justify-end gap-2"><button type="button" className="rounded-lg border px-4 py-2 text-sm" onClick={() => setPayingBill(null)}>Cancel</button><button disabled={savingPayment} className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingPayment ? 'Saving…' : 'Record payment'}</button></div>
+              </form>
+            </section>
+          </div>
+        </div>,
+        document.body,
+      )}
     </main>
   );
 }

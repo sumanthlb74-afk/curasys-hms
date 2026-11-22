@@ -9,7 +9,16 @@ import Prescription from './Prescription.js';
 import User from './User.js';
 import Vital from './Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
-import { bloodGroups, departments, preliminaryCheckSymptoms, triageLevels, wards } from '../../shared/constants.js';
+import {
+  bloodGroups,
+  departments,
+  paymentMethods,
+  preliminaryCheckSymptoms,
+  prescriptionAdviceSuggestions,
+  triageLevels,
+  userRoles,
+  wards,
+} from '../../shared/constants.js';
 
 test('shared contact validators reject wrong types and oversized values', () => {
   assert.equal(isOptionalPhone(123), false);
@@ -231,6 +240,8 @@ test('billing requires a patient, administrator, positive whole-paise amount, an
   assert.equal(await getValidationError(valid), null);
   assert.equal(valid.status, 'Unpaid');
   assert.equal(valid.paidAt, null);
+  assert.deepEqual(Billing.schema.path('paymentMethod').enumValues, ['', ...paymentMethods]);
+  assert.equal(valid.discountPaise, 0);
   const invoiceIndex = Billing.schema.indexes().find(([keys]) => keys.invoiceNumber === 1);
   assert.ok(invoiceIndex);
   assert.equal(invoiceIndex[1].unique, true);
