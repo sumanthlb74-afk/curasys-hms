@@ -69,7 +69,7 @@ The repository includes a Render Blueprint (`render.yaml`) for both free service
 
 Render's free API service spins down after 15 minutes without traffic and can take about one minute to wake. This affects API requests (login and data loading), not the static frontend itself. The frontend allows up to 90 seconds for API requests so a cold start has time to complete. Keep the page open while it connects. While account or billing forms are submitting, do not submit again; if a timeout appears, refresh the dashboard and check for the created record before retrying.
 
-The API service needs `NODE_ENV=production`, `MONGODB_URI`, `JWT_SECRET` (at least 32 characters), `ADMIN_REGISTRATION_KEY`, and `CLIENT_ORIGIN=https://curasys-hms.onrender.com`. The Blueprint generates values for the two secrets. If the existing Render service has no `ADMIN_REGISTRATION_KEY`, add it under **curasys-hms-api → Environment**, save, and redeploy. Keep it only in the API environment; never put it in `VITE_*` variables or source code. To retrieve a generated key, reveal it in the API service's Environment page and enter it only in Administrator setup. The static service uses `VITE_API_BASE_URL=https://curasys-hms-api.onrender.com/api`. Render supplies `PORT`; clinic hours default to 08:00–20:00, and `HOSPITAL_TZ` defaults to `Asia/Kolkata`.
+The API service needs `NODE_ENV=production`, `MONGODB_URI`, `JWT_SECRET` (at least 32 characters), `ADMIN_REGISTRATION_KEY`, and `CLIENT_ORIGIN=https://curasys-hms.onrender.com`. The Blueprint generates values for the two secrets. If the existing Render service has no `ADMIN_REGISTRATION_KEY`, add it under **curasys-hms-api → Environment**, save, and redeploy. Keep it only in the API environment; never put it in `VITE_*` variables or source code. To retrieve a generated key, reveal it in the API service's Environment page and enter it only in Administrator setup. The static service uses `VITE_API_BASE_URL=https://curasys-hms-api.onrender.com/api`. Render supplies `PORT`; clinic hours default to 24-hour operation (00:00–24:00), and `HOSPITAL_TZ` defaults to `Asia/Kolkata`.
 
 The live URL is assigned by Render after the Blueprint deploys. Do not enter real patient information; this educational project is not approved for clinical use.
 
@@ -83,7 +83,7 @@ For a manual deployment, configure these settings from the repository root; the 
    - `NODE_ENV`: `production`.
    - `CLIENT_ORIGIN`: the full frontend origin, such as `https://curasys-hms.onrender.com`.
    - `HOSPITAL_TZ`: optional IANA time zone for appointment validation; defaults to `Asia/Kolkata`.
-   - `CLINIC_START_HOUR` and `CLINIC_END_HOUR`: optional 24-hour clock range; defaults to `8` and `20` (the end hour is exclusive).
+   - `CLINIC_START_HOUR` and `CLINIC_END_HOUR`: optional 24-hour clock range; defaults to `0` and `24` for hourly scheduling all day (the end hour is exclusive).
    - For a separately hosted frontend, also set `VITE_CLINIC_START_HOUR` and `VITE_CLINIC_END_HOUR` to the same values at build time.
    - `PORT`: usually supplied automatically by the hosting provider.
 3. For the API service, use `npm ci --omit=dev` and `npm start`. For the static frontend, use `npm ci --include=dev`, `npm run build`, and publish `dist`.
@@ -102,7 +102,7 @@ For a separate frontend host, set `VITE_API_BASE_URL` to the API's absolute URL 
 - Receptionists can read the latest prescription report without access to doctor's private clinical notes, book appointments, create itemized bills, and record payment method and optional reference. Invoice numbers are atomic and unique; totals are recomputed server-side in paise. Only administrators can void bills and read all bills.
 - Patients can read only their own prescriptions and bills. They receive HTTP 403 for appointments, vitals, and clinical notes; their portal displays only prescriptions and bills, plus their name and UHID header and password controls.
 - Medical staff coordinate appointments and bed assignments without access to prescriptions or doctor's notes. Deactivated patient accounts retain their historical records.
-- Appointment scheduling supports every calendar day with configurable one-hour slots, defaulting to 08:00–20:00. Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
+- Appointment scheduling supports every calendar day with configurable one-hour slots, defaulting to 24-hour operation (00:00–24:00). Existing bookings are marked when a doctor and date are selected, and a database uniqueness constraint rejects concurrent double-booking. The API evaluates "in the past" in `HOSPITAL_TZ` (default `Asia/Kolkata`).
 - Admin live bed counts, patient directory, staff accounts, bed creation/assignment/discharge, and appointment overview.
 - Administrator-only audit log records authentication outcomes and key patient, billing, note, prescription, and vital actions. Patient account deactivation retains data and records the administrator and timestamp.
 - Patient, appointment, vital, billing, prescription, and visit-note list APIs support `page`, `limit` (maximum 200), and patient search via `q`; the patient directory and pickers expose search and paging.

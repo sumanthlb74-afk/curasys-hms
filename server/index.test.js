@@ -89,12 +89,12 @@ test('CORS allows the configured frontend and omits authorization for other orig
   assert.equal(untrusted.headers.get('access-control-allow-origin'), null);
 });
 
-test('clinic-hour validation accepts only hourly slots in the configured range', () => {
-  assert.equal(isWithinClinicHours('08:00', 8, 20), true);
-  assert.equal(isWithinClinicHours('19:00', 8, 20), true);
-  assert.equal(isWithinClinicHours('07:00', 8, 20), false);
-  assert.equal(isWithinClinicHours('20:00', 8, 20), false);
-  assert.equal(isWithinClinicHours('09:30', 8, 20), false);
+test('clinic-hour validation accepts only hourly slots across the 24-hour schedule', () => {
+  assert.equal(isWithinClinicHours('00:00', 0, 24), true);
+  assert.equal(isWithinClinicHours('01:00', 0, 24), true);
+  assert.equal(isWithinClinicHours('23:00', 0, 24), true);
+  assert.equal(isWithinClinicHours('09:30', 0, 24), false);
+  assert.equal(isWithinClinicHours('24:00', 0, 24), false);
 });
 
 test('oversized JSON receives a 413 response', async () => {

@@ -27,5 +27,5 @@ export const preliminaryCheckSymptoms = Object.freeze([
   'Other',
 ]);
 export const paymentMethods = Object.freeze(['Cash', 'Card', 'UPI QR', 'Net Banking']);
-export const defaultClinicStartHour = 8;
-export const defaultClinicEndHour = 20;
+export const defaultClinicStartHour = 0;
+export const defaultClinicEndHour = 24;
