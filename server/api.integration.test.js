@@ -388,12 +388,12 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     token: adminToken,
     body: { specialization: 'Cardiology' },
   });
-  assert.equal(departmentChange.status, 200);
+  assert.equal(departmentChange.status, 403);
   assert.equal(await AuditLog.countDocuments({
     action: 'doctor.department_changed',
     entityId: secondDoctorCreation.body.doctor.id,
     actorRole: 'admin',
-  }), 1);
+  }), 0);
 
   const staffCreation = await api('/api/staff', {
     method: 'POST',
@@ -445,6 +445,12 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal((await api('/api/receptionists', { token: receptionistToken })).status, 403);
   assert.equal((await api('/api/clinical-notes', { token: receptionistToken })).status, 403);
   assert.equal((await api('/api/vitals', { token: receptionistToken })).status, 403);
+  assert.equal((await api('/api/users', { token: doctorToken })).status, 403);
+  assert.equal((await api(`/api/users/${doctorCreation.body.doctor.id}/reset-password`, {
+    method: 'POST',
+    token: staffToken,
+    body: { password: 'ShouldBeDenied1!' },
+  })).status, 403);
   assert.equal((await api('/api/doctors', {
     method: 'POST',
     token: staffToken,
@@ -935,7 +941,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
 
   const billOne = await api('/api/billing', {
     method: 'POST',
-    token: adminToken,
+    token: receptionistToken,
     body: {
       patientId: doctorPatient.body.patient.id,
       lineItems: [{ description: 'Consultation', amount: 125.5 }],
@@ -995,8 +1001,7 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   })).status, 403);
 
   const auditAsAdmin = await api('/api/audit', { token: adminToken });
-  assert.equal(auditAsAdmin.status, 200);
-  assert.ok(auditAsAdmin.body.items.some(({ action }) => action === 'patient.created'));
+  assert.equal(auditAsAdmin.status, 403);
 
   const reset = await api(`/api/patients/${doctorPatient.body.patient.id}/reset-password`, {
     method: 'POST',
@@ -1010,9 +1015,44 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   assert.equal(resetPatientLogin.status, 200);
   assert.equal(resetPatientLogin.body.user.mustChangePassword, true);
 
+  for (const [id, email, oldPassword, temporaryPassword] of [
+    [doctorCreation.body.doctor.id, 'doctor@example.test', 'DoctorPassword2!', 'DoctorReset3!'],
+    [staffCreation.body.staff.id, 'staff@example.test', 'StaffPassword2!', 'StaffReset3!'],
+    [receptionistCreation.body.receptionist.id, 'receptionist@example.test', 'ReceptionPassword2!', 'ReceptionReset3!'],
+    [doctorPatient.body.patient.id, 'doctor-patient@example.test', 'PatientPassword3!', 'PatientReset4!'],
+  ]) {
+    const adminReset = await api(`/api/users/${id}/reset-password`, {
+      method: 'POST',
+      token: adminToken,
+      body: { password: temporaryPassword },
+    });
+    assert.equal(adminReset.status, 200);
+    assert.equal(adminReset.body.temporaryPassword, temporaryPassword);
+    assert.equal(adminReset.body.user.mustChangePassword, true);
+    assert.equal((await login(email, oldPassword)).status, 401);
+    const resetLogin = await login(email, temporaryPassword);
+    assert.equal(resetLogin.status, 200);
+    assert.equal(resetLogin.body.user.mustChangePassword, true);
+  }
+
+  const deactivate = await api(`/api/users/${doctorPatient.body.patient.id}/active`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { isActive: false },
+  });
+  assert.equal(deactivate.status, 200);
+  assert.equal((await login('doctor-patient@example.test', 'PatientReset4!')).status, 401);
+  assert.equal((await api('/api/auth/me', { token: resetPatientLogin.body.token })).status, 401);
+  const reactivate = await api(`/api/users/${doctorPatient.body.patient.id}/active`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: { isActive: true },
+  });
+  assert.equal(reactivate.status, 200);
+
   const preservedHistory = await User.findOne({ email: 'doctor-patient@example.test' }).lean();
   assert.ok(preservedHistory);
-  await api(`/api/patients/${preservedHistory._id}`, { method: 'DELETE', token: adminToken });
+  await api(`/api/users/${preservedHistory._id}/active`, { method: 'PATCH', token: adminToken, body: { isActive: false } });
   assert.ok(await User.exists({ _id: preservedHistory._id, isActive: false }));
   assert.equal(await ClinicalNote.countDocuments({ patientId: preservedHistory._id }), 1);
 });

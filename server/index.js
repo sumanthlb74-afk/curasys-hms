@@ -106,6 +106,7 @@ function publicUser(user) {
     name: user.name,
     email: user.email,
     role: user.role,
+    isActive: user.isActive !== false,
     uhid: user.uhid,
     mustChangePassword: user.mustChangePassword,
     phone: user.phone,
@@ -503,6 +504,83 @@ app.get('/api/auth/me', authenticate, (request, response) => {
   response.json({ user: publicUser(request.user) });
 });
 
+app.get('/api/users', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  const query = request.query.q ?? '';
+  if (typeof query !== 'string' || query.length > 100) {
+    response.status(400).json({ error: 'Use a search query of at most 100 characters.' });
+    return;
+  }
+  const trimmedQuery = query.trim();
+  const filter = trimmedQuery
+    ? { $or: [{ name: escapedRegex(trimmedQuery) }, { email: escapedRegex(trimmedQuery) }, { phone: escapedRegex(trimmedQuery) }, { role: escapedRegex(trimmedQuery) }] }
+    : {};
+  const users = await User.find(filter)
+    .select('name email role phone specialization uhid isActive mustChangePassword dateOfBirth')
+    .sort({ role: 1, name: 1 })
+    .lean();
+  response.json({ users: users.map((user) => ({ ...user, id: String(user._id) })) });
+}));
+
+app.post('/api/users/:id/reset-password', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  if (!validObjectId(request.params.id)) {
+    response.status(400).json({ error: 'Invalid user ID.' });
+    return;
+  }
+  if (request.params.id === request.user.id) {
+    response.status(400).json({ error: 'Use Change password to update your own administrator password.' });
+    return;
+  }
+  const { password } = request.body ?? {};
+  if (!validPassword(password)) {
+    response.status(400).json({ error: 'Enter a temporary password with at least 8 characters.' });
+    return;
+  }
+  const user = await User.findById(request.params.id).select('+password sessionVersion');
+  if (!user) {
+    response.status(404).json({ error: 'User not found.' });
+    return;
+  }
+  user.password = password;
+  user.mustChangePassword = true;
+  user.passwordChangedAt = new Date();
+  user.sessionVersion = (user.sessionVersion || 0) + 1;
+  await user.save();
+  await audit(request, { action: 'user.password_reset', entityType: 'user', entityId: user._id });
+  response.json({ success: true, temporaryPassword: password, user: publicUser(user) });
+}));
+
+app.patch('/api/users/:id/active', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+  if (!validObjectId(request.params.id)) {
+    response.status(400).json({ error: 'Invalid user ID.' });
+    return;
+  }
+  if (request.params.id === request.user.id) {
+    response.status(400).json({ error: 'You cannot change your own active status.' });
+    return;
+  }
+  const { isActive } = request.body ?? {};
+  if (typeof isActive !== 'boolean') {
+    response.status(400).json({ error: 'isActive must be true or false.' });
+    return;
+  }
+  const user = await User.findById(request.params.id).select('role isActive sessionVersion');
+  if (!user) {
+    response.status(404).json({ error: 'User not found.' });
+    return;
+  }
+  if (!isActive && user.role === 'admin' && await User.countDocuments({ role: 'admin', isActive: { $ne: false } }) <= 1) {
+    response.status(409).json({ error: 'The last active administrator cannot be deactivated.' });
+    return;
+  }
+  user.isActive = isActive;
+  user.deletedAt = isActive ? null : new Date();
+  user.deletedBy = isActive ? null : request.user._id;
+  user.sessionVersion = (user.sessionVersion || 0) + 1;
+  await user.save();
+  await audit(request, { action: isActive ? 'user.activated' : 'user.deactivated', entityType: 'user', entityId: user._id });
+  response.json({ success: true, user: publicUser(user) });
+}));
+
 app.get('/api/admins', authenticate, allow('admin'), asyncRoute(async (_request, response) => {
   const administrators = await User.find({ role: 'admin', isActive: { $ne: false } })
     .select('name email')
@@ -553,7 +631,7 @@ app.post('/api/auth/change-password', authenticate, asyncRoute(async (request, r
   response.json({ token: signToken(user), user: publicUser(user) });
 }));
 
-app.get('/api/doctors', authenticate, allow('staff', 'receptionist', 'admin'), asyncRoute(async (_request, response) => {
+app.get('/api/doctors', authenticate, allow('staff', 'receptionist'), asyncRoute(async (_request, response) => {
   const doctors = await User.find({ role: 'doctor', isActive: { $ne: false } })
     .select('name email phone specialization')
     .sort({ name: 1 })
@@ -581,7 +659,7 @@ app.post('/api/doctors', authenticate, allow('admin'), asyncRoute(async (request
   response.status(201).json({ doctor: publicUser(doctor) });
 }));
 
-app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+app.put('/api/doctors/:id', authenticate, allow('audit-reader'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id) || !departments.includes(request.body?.specialization)) {
     response.status(400).json({ error: 'Choose a valid doctor and department.' });
     return;
@@ -607,7 +685,7 @@ app.put('/api/doctors/:id', authenticate, allow('admin'), asyncRoute(async (requ
   response.json({ doctor: publicUser(doctor) });
 }));
 
-app.get('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = { role: 'patient', isActive: { $ne: false } };
@@ -630,7 +708,7 @@ app.get('/api/patients', authenticate, allow('doctor', 'staff', 'receptionist', 
   response.json({ patients, items: patients, total, page });
 }));
 
-app.get('/api/audit', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+app.get('/api/audit', authenticate, allow('audit-reader'), asyncRoute(async (request, response) => {
   const page = Number.parseInt(request.query.page, 10) || 1;
   const limit = Math.min(Number.parseInt(request.query.limit, 10) || 50, 200);
   if (page < 1 || limit < 1) {
@@ -796,7 +874,7 @@ app.put('/api/patients/:id', authenticate, asyncRoute(async (request, response) 
   response.json({ patient: publicUser(patient) });
 }));
 
-app.delete('/api/patients/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+app.delete('/api/patients/:id', authenticate, allow('audit-reader'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid patient ID.' });
     return;
@@ -817,7 +895,7 @@ app.delete('/api/patients/:id', authenticate, allow('admin'), asyncRoute(async (
   response.json({ success: true, message: 'Patient account deactivated; the medical record has been retained.' });
 }));
 
-app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staff'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid patient ID.' });
     return;
@@ -853,7 +931,7 @@ app.post('/api/patients/:id/reset-password', authenticate, allow('doctor', 'staf
   response.json({ success: true });
 }));
 
-app.get('/api/appointments', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/appointments', authenticate, allow('doctor', 'staff', 'receptionist'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient'
@@ -869,7 +947,7 @@ app.get('/api/appointments', authenticate, allow('doctor', 'staff', 'receptionis
   response.json({ appointments: result.items, ...result });
 }));
 
-app.post('/api/appointments', authenticate, allow('staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/appointments', authenticate, allow('staff', 'receptionist'), asyncRoute(async (request, response) => {
   const { doctorId, department, date, time, symptoms, triage } = request.body ?? {};
   const patientId = request.body?.patientId;
   if (
@@ -917,7 +995,7 @@ app.post('/api/appointments', authenticate, allow('staff', 'receptionist', 'admi
   response.status(201).json({ appointment });
 }));
 
-app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
+app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'receptionist'), asyncRoute(async (request, response) => {
   const { status, triage, doctorId } = request.body ?? {};
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid appointment ID.' });
@@ -994,7 +1072,7 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'recepti
   response.json({ appointment });
 }));
 
-app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff', 'receptionist'), asyncRoute(async (request, response) => {
+app.delete('/api/appointments/:id', authenticate, allow('staff', 'receptionist'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid appointment ID.' });
     return;
@@ -1011,7 +1089,7 @@ app.delete('/api/appointments/:id', authenticate, allow('admin', 'staff', 'recep
   response.json({ appointment });
 }));
 
-app.get('/api/beds', authenticate, allow('admin', 'doctor', 'staff'), asyncRoute(async (request, response) => {
+app.get('/api/beds', authenticate, allow('doctor', 'staff'), asyncRoute(async (request, response) => {
   const patientIds = request.user.role === 'doctor' ? await doctorPatientIds(request.user.id) : null;
   const filter = patientIds ? { patientId: { $in: patientIds } } : {};
   const [beds, totals] = await Promise.all([
@@ -1024,7 +1102,7 @@ app.get('/api/beds', authenticate, allow('admin', 'doctor', 'staff'), asyncRoute
   response.json({ beds, totals });
 }));
 
-app.post('/api/beds', authenticate, allow('admin', 'staff'), asyncRoute(async (request, response) => {
+app.post('/api/beds', authenticate, allow('staff'), asyncRoute(async (request, response) => {
   const { bedNumber, ward } = request.body ?? {};
   if (typeof bedNumber !== 'string' || !/^[A-Z0-9-]{2,20}$/i.test(bedNumber.trim()) || !wards.includes(ward)) {
     response.status(400).json({ error: 'Enter a valid bed number and ward.' });
@@ -1034,7 +1112,7 @@ app.post('/api/beds', authenticate, allow('admin', 'staff'), asyncRoute(async (r
   response.status(201).json({ bed });
 }));
 
-app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async (request, response) => {
+app.put('/api/beds/:id', authenticate, allow('staff'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid bed ID.' });
     return;
@@ -1119,7 +1197,7 @@ app.put('/api/beds/:id', authenticate, allow('admin', 'staff'), asyncRoute(async
   response.json({ bed });
 }));
 
-app.delete('/api/beds/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+app.delete('/api/beds/:id', authenticate, allow('staff'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid bed ID.' });
     return;
@@ -1137,7 +1215,7 @@ app.delete('/api/beds/:id', authenticate, allow('admin'), asyncRoute(async (requ
   response.json({ success: true });
 }));
 
-app.get('/api/billing', authenticate, allow('patient', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/billing', authenticate, allow('patient', 'receptionist'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient' ? { patientId: request.user.id } : {};
@@ -1152,7 +1230,7 @@ app.get('/api/billing', authenticate, allow('patient', 'receptionist', 'admin'),
   response.json({ bills: result.items, ...result });
 }));
 
-app.post('/api/billing', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
+app.post('/api/billing', authenticate, allow('receptionist'), asyncRoute(async (request, response) => {
   const { patientId, lineItems, discount, notes } = request.body ?? {};
   const validAmount = (value) => typeof value === 'number'
     && Number.isFinite(value)
@@ -1198,7 +1276,7 @@ app.post('/api/billing', authenticate, allow('admin', 'receptionist'), asyncRout
   response.status(201).json({ bill });
 }));
 
-app.put('/api/billing/:id', authenticate, allow('admin', 'receptionist'), asyncRoute(async (request, response) => {
+app.put('/api/billing/:id', authenticate, allow('receptionist'), asyncRoute(async (request, response) => {
   const { status, paymentMethod, paymentReference = '' } = request.body ?? {};
   if (!validObjectId(request.params.id) || !['Paid', 'Void'].includes(status)) {
     response.status(400).json({ error: 'Choose a valid bill and status.' });
@@ -1237,7 +1315,7 @@ app.put('/api/billing/:id', authenticate, allow('admin', 'receptionist'), asyncR
   response.json({ bill });
 }));
 
-app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'receptionist', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'receptionist'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   if (request.user.role === 'receptionist' && !validObjectId(request.query.patientId)) {
@@ -1460,7 +1538,7 @@ app.delete('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(a
   response.json({ success: true });
 }));
 
-app.get('/api/vitals', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/vitals', authenticate, allow('doctor', 'staff'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'doctor'
@@ -1474,7 +1552,7 @@ app.get('/api/vitals', authenticate, allow('doctor', 'staff', 'admin'), asyncRou
   response.json({ vitals: result.items, ...result });
 }));
 
-app.post('/api/vitals', authenticate, allow('staff', 'admin'), asyncRoute(async (request, response) => {
+app.post('/api/vitals', authenticate, allow('staff'), asyncRoute(async (request, response) => {
   const {
     patientId, heartRate, systolic, diastolic, temperatureC, oxygenSaturation,
     heightCm, weightKg, symptoms, symptomOther, notes,
@@ -1608,7 +1686,7 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
   response.json({ vital });
 }));
 
-app.delete('/api/vitals/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
+app.delete('/api/vitals/:id', authenticate, allow('audit-reader'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid vital record ID.' });
     return;

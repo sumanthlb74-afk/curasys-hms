@@ -24,6 +24,21 @@ Status: complete. Branch: `post-review-fixes`.
 - `render.yaml` expects Node 22.12.0, production API secrets, the production client origin, the API base URL, and 24-hour defaults (`CLINIC_START_HOUR=0`, `CLINIC_END_HOUR=24`) for both services.
 - No production database was used for testing.
 
+## Stage 2 — administrator accounts only
+
+Status: implemented locally and pushed for CI verification.
+
+- Replaced the admin route with a new account-only workspace in `src/components/AdminAccountsOnlyDashboard.jsx`.
+- Reused the existing unified account creation form and added searchable lists for administrators, doctors, medical staff, receptionists, and patients.
+- Added active/inactive toggles and one-time generated temporary-password reset dialogs.
+- Added admin-only `GET /api/users`, `POST /api/users/:id/reset-password`, and `PATCH /api/users/:id/active`.
+- Password resets set `mustChangePassword`, update `passwordChangedAt`, increment `sessionVersion`, audit the action, and return the temporary password once.
+- Deactivation increments `sessionVersion`, blocks login, invalidates existing tokens, blocks self-deactivation, and protects the last active administrator.
+- Removed administrator access from beds, billing, appointments, prescriptions, vitals, audit, patient listing, and doctor department editing; account creation routes remain available.
+- Added integration assertions for all-role admin reset, old-password rejection, token invalidation, non-admin 403 responses, and deactivation.
+
+Verification: lint passed; 39 tests passed; 1 local Mongo integration test skipped because `MONGODB_TEST_URI` is not set; build passed. No production database was used.
+
 ## Next stage
 
-Implement the admin-only account workspace and role-neutral admin password reset/deactivate API first, with allowed/forbidden integration tests.
+Wait for GitHub Actions CI to run the Mongo integration workflow, then proceed to Stage 3: fixed medicine timing dropdown and prescription-linked billing line items.

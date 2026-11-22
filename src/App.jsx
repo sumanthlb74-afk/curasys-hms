@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import api from './api.js';
+import AdminAccountsOnlyDashboard from './components/AdminAccountsOnlyDashboard.jsx';
 import {
   bloodGroups,
   defaultClinicEndHour,
@@ -346,7 +347,7 @@ function AppRoutes() {
         <Route path="/doctor-dashboard" element={<Protected user={user} role="doctor"><DoctorDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/medical-staff" element={<Protected user={user} role="staff"><StaffDashboard notify={notify} /></Protected>} />
         <Route path="/receptionist-dashboard" element={<Protected user={user} role="receptionist"><ReceptionistDashboard notify={notify} /></Protected>} />
-        <Route path="/admin-command-center" element={<Protected user={user} role="admin"><AdminDashboard notify={notify} /></Protected>} />
+        <Route path="/admin-command-center" element={<Protected user={user} role="admin"><AdminAccountsOnlyDashboard user={user} notify={notify} CreateAccountForm={AdminAccountForm} /></Protected>} />
         <Route path="*" element={<Navigate to={user ? path : '/login'} replace state={{ from: location.pathname }} />} />
       </Routes>
     </div>
@@ -1743,5 +1744,7 @@ function AdminDashboard({ notify }) {
     </main>
   );
 }
+
+void AdminDashboard;
 
 export default App;
