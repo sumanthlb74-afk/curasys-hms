@@ -72,10 +72,6 @@ function formatAppointmentDate(date) {
   return new Date(date).toLocaleDateString(undefined, { timeZone: 'UTC' });
 }
 
-function formatDateOnly(date) {
-  return new Date(date).toLocaleDateString(undefined, { timeZone: 'UTC' });
-}
-
 function formatAppointmentSlot(time) {
   const slot = appointmentSlots.find((item) => item.time === time);
   return slot?.label || time;
@@ -349,6 +345,7 @@ function AppRoutes() {
         <Route path="/patient-portal" element={<Protected user={user} role="patient"><PatientDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/doctor-dashboard" element={<Protected user={user} role="doctor"><DoctorDashboard user={user} notify={notify} /></Protected>} />
         <Route path="/medical-staff" element={<Protected user={user} role="staff"><StaffDashboard notify={notify} /></Protected>} />
+        <Route path="/receptionist-dashboard" element={<Protected user={user} role="receptionist"><ReceptionistDashboard notify={notify} /></Protected>} />
         <Route path="/admin-command-center" element={<Protected user={user} role="admin"><AdminDashboard notify={notify} /></Protected>} />
         <Route path="*" element={<Navigate to={user ? path : '/login'} replace state={{ from: location.pathname }} />} />
       </Routes>
@@ -796,52 +793,21 @@ function PageTitle({ eyebrow, title, description, icon: Icon }) {
 
 function PatientDashboard({ user, notify }) {
   const { data, loading, error, refresh } = useLoad(notify, [
-    { key: 'appointments', path: '/appointments' },
     { key: 'billing', path: '/billing' },
     { key: 'prescriptions', path: '/prescriptions' },
-    { key: 'vitals', path: '/vitals' },
-    { key: 'clinicalNotes', path: '/clinical-notes' },
   ]);
-  const appointments = data.appointments?.appointments || [];
   const bills = data.billing?.bills || [];
-  const totalBilledPaise = bills.reduce((total, bill) => total + (bill.status === 'Void' ? 0 : bill.totalPaise), 0);
   const prescriptions = data.prescriptions?.prescriptions || [];
-  const vitals = data.vitals?.vitals || [];
-  const clinicalNotes = data.clinicalNotes?.clinicalNotes || [];
-  const age = calculateAge(user.dateOfBirth);
 
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
-      <PageTitle eyebrow="Patient portal · read-only" title={`Hello, ${user.name}`} description="Review records and treatment information entered by your care team." icon={Activity} />
-      <Card title="Your profile" icon={ShieldCheck}>
-        <dl className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          {[['Unique Health ID', user.uhid], ['Age', age === null ? 'Not recorded' : `${age} years`], ['Date of birth', user.dateOfBirth ? formatDateOnly(user.dateOfBirth) : 'Not recorded'], ['Sex', user.sex || 'Not recorded'], ['Blood group', user.bloodGroup || 'Not recorded'], ['Height', user.heightCm ? `${user.heightCm} cm` : 'Not recorded'], ['Weight', user.weightKg ? `${user.weightKg} kg` : 'Not recorded'], ['Phone', user.phone || 'Not added'], ['Email', user.email], ['Address', user.address || 'Not recorded']].map(([label, value]) => <div key={label}><dt className="text-slate-500">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>)}
-        </dl>
-        <div className="mt-5 grid gap-4 border-t border-slate-100 pt-4 text-sm dark:border-slate-800 sm:grid-cols-2">
-          <div><p className="font-semibold">Allergies</p><p className="mt-1 text-slate-500">{user.allergies?.length ? user.allergies.join(', ') : 'None recorded'}</p></div>
-          <div><p className="font-semibold">Ongoing conditions</p><p className="mt-1 text-slate-500">{user.chronicConditions?.length ? user.chronicConditions.join(', ') : 'None recorded'}</p></div>
-          <div><p className="font-semibold">Current medications</p><p className="mt-1 text-slate-500">{user.currentMedications?.length ? user.currentMedications.join(', ') : 'None recorded'}</p></div>
-          <div><p className="font-semibold">Emergency contact</p><p className="mt-1 text-slate-500">{user.emergencyContact?.name ? `${user.emergencyContact.name} · ${user.emergencyContact.relationship || 'Contact'} · ${user.emergencyContact.phone || 'No phone'}` : 'Not recorded'}</p></div>
-        </div>
+      <PageTitle eyebrow="Patient portal · read-only" title={`Hello, ${user.name}`} description={`UHID: ${user.uhid || 'Not assigned'} · Your prescriptions and bills`} icon={Activity} />
+      <Card title="Prescriptions" icon={ClipboardList}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been added to your records.</Empty> : <div className="space-y-3">{prescriptions.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-semibold">{item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">Prescribed by {item.doctorId?.name || 'Doctor'} · {new Date(item.createdAt).toLocaleDateString()}</p><ul className="mt-3 space-y-2 text-sm">{item.medicines.map((medicine, index) => <li key={`${item._id}-${index}`}><span className="font-medium">{medicine.name}</span> · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.route && ` · ${medicine.route}`}{medicine.instructions && <span className="block text-xs text-slate-500">{medicine.instructions}</span>}</li>)}</ul>{item.instructions && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">Instructions: {item.instructions}</p>}{item.followUp && <p className="mt-2 text-xs font-medium text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}{item.advice?.suggestions?.length > 0 && <p className="mt-2 text-sm"><span className="font-medium">Lifestyle advice:</span> {item.advice.suggestions.join(' · ')}</p>}{item.advice?.notes && <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">{item.advice.notes}</p>}</article>)}</div>}
       </Card>
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Your appointments" icon={CalendarDays}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty /> : <div className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <div key={item._id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0"><div><p className="font-medium">{item.department} <span className="ml-1 rounded-full bg-teal-50 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-950 dark:text-teal-300">{item.status}</span></p><p className="mt-1 text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)} · {item.triage}</p><p className="mt-1 text-xs text-slate-500">Doctor: {item.doctorId?.name || 'To be assigned'}</p><p className="mt-1 text-xs text-slate-500">Symptoms: {item.symptoms}</p></div></div>)}</div>}
-        </Card>
-        <Card title="Prescriptions" icon={ClipboardList}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : prescriptions.length === 0 ? <Empty>No prescriptions have been added to your records.</Empty> : <div className="space-y-3">{prescriptions.map((item) => <article key={item._id} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><p className="font-semibold">{item.diagnosis}</p><p className="mt-1 text-xs text-slate-500">Prescribed by {item.doctorId?.name || 'Doctor'} · {new Date(item.createdAt).toLocaleDateString()}</p><ul className="mt-3 space-y-2 text-sm">{item.medicines.map((medicine, index) => <li key={`${item._id}-${index}`}><span className="font-medium">{medicine.name}</span> · {medicine.dosage} · {medicine.frequency} · {medicine.duration}{medicine.route && ` · ${medicine.route}`}{medicine.instructions && <span className="block text-xs text-slate-500">{medicine.instructions}</span>}</li>)}</ul>{item.instructions && <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">Instructions: {item.instructions}</p>}{item.followUp && <p className="mt-2 text-xs font-medium text-teal-700 dark:text-teal-300">Follow-up: {item.followUp}</p>}</article>)}</div>}
-        </Card>
-        <Card title="Vital history" icon={Activity}>
-          {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : vitals.length === 0 ? <Empty>No measurements have been logged.</Empty> : <div className="space-y-2">{vitals.map((item) => <div key={item._id} className="rounded-xl bg-slate-50 p-3 text-sm dark:bg-slate-800/60"><p className="font-medium">{new Date(item.createdAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{[['HR', item.heartRate && `${item.heartRate} bpm`], ['BP', item.systolic && item.diastolic ? `${item.systolic}/${item.diastolic} mmHg` : null], ['RR', item.respiratoryRate && `${item.respiratoryRate}/min`], ['Temp', item.temperatureC && `${item.temperatureC} °C`], ['Glucose', item.bloodGlucose && `${item.bloodGlucose} mg/dL`], ['O₂', item.oxygenSaturation && `${item.oxygenSaturation}%`], ['Height', item.heightCm && `${item.heightCm} cm`], ['Weight', item.weightKg && `${item.weightKg} kg`]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>{item.notes && <p className="mt-1 text-xs">{item.notes}</p>}</div>)}</div>}
-        </Card>
-      </div>
       <Card title="Your bills" icon={Receipt}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><span className="font-medium">Total billed (excluding void bills)</span><span className="text-lg font-bold text-teal-700 dark:text-teal-300">{formatCurrency(totalBilledPaise)}</span></div>{bills.length === 0 ? <Empty>No bills have been issued.</Empty> : bills.map((bill) => <article key={bill._id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div><p className="font-semibold">{bill.description}</p><p className="mt-1 text-xs text-slate-500">{bill.invoiceNumber || 'Legacy invoice'} · {bill.status || 'Unpaid'} · Issued by {bill.createdBy?.name || 'Hospital administration'} · {new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></article>)}</div>}
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : bills.length === 0 ? <Empty>No bills have been issued.</Empty> : <div className="space-y-3">{bills.map((bill) => <article key={bill._id} className="rounded-xl border border-slate-100 p-4 dark:border-slate-800"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">{bill.invoiceNumber || 'Legacy invoice'}</p><p className="mt-1 text-xs text-slate-500">{new Date(bill.createdAt).toLocaleDateString()}</p></div><p className="text-lg font-bold">{formatCurrency(bill.totalPaise)}</p></div><ul className="mt-3 space-y-1 text-sm">{bill.lineItems?.length ? bill.lineItems.map((item, index) => <li key={`${bill._id}-${index}`} className="flex justify-between gap-3"><span>{item.description}</span><span>{formatCurrency(item.amountPaise)}</span></li>) : <li>{bill.description}</li>}</ul>{bill.discountPaise > 0 && <p className="mt-2 text-sm">Discount: −{formatCurrency(bill.discountPaise)}</p>}<p className="mt-2 text-sm font-medium">Status: {bill.status || 'Unpaid'}{bill.paymentMethod && ` · ${bill.paymentMethod}`}</p></article>)}</div>}
       </Card>
-      <Card title="Doctor visit notes" icon={ClipboardList}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : clinicalNotes.length === 0 ? <Empty>No visit notes have been added to your chart.</Empty> : <div className="grid gap-3 md:grid-cols-2">{clinicalNotes.map((note) => <article key={note._id} className="rounded-xl border border-slate-100 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/60"><div className="flex flex-wrap justify-between gap-2"><p className="font-semibold">{note.assessment}</p><time className="text-xs text-slate-500">{new Date(note.createdAt).toLocaleDateString()}</time></div><p className="mt-2 text-sm"><span className="font-medium">Complaint:</span> {note.chiefComplaint}</p>{note.historyOfPresentIllness && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">History:</span> {note.historyOfPresentIllness}</p>}{note.examination && <p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Examination:</span> {note.examination}</p>}<p className="mt-2 text-sm text-slate-600 dark:text-slate-300"><span className="font-medium">Care plan:</span> {note.plan}</p>{note.followUp && <p className="mt-2 text-xs text-teal-700 dark:text-teal-300"><span className="font-semibold">Follow-up:</span> {note.followUp}</p>}<p className="mt-3 text-xs text-slate-500">Dr. {note.doctorId?.name || 'Care team'}</p></article>)}</div>}
-      </Card>
-      <p className="text-center text-xs text-slate-500">Your medical records are read-only. Contact your care team if something needs correction.</p>
     </main>
   );
 }

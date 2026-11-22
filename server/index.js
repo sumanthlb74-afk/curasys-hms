@@ -1267,7 +1267,7 @@ app.get('/api/prescriptions', authenticate, allow('patient', 'doctor', 'receptio
   response.json({ prescriptions: result.items, ...result });
 }));
 
-app.get('/api/clinical-notes', authenticate, allow('patient', 'doctor'), asyncRoute(async (request, response) => {
+app.get('/api/clinical-notes', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
   const filter = request.user.role === 'patient'
@@ -1460,14 +1460,12 @@ app.delete('/api/prescriptions/:id', authenticate, allow('doctor'), asyncRoute(a
   response.json({ success: true });
 }));
 
-app.get('/api/vitals', authenticate, allow('patient', 'doctor', 'admin'), asyncRoute(async (request, response) => {
+app.get('/api/vitals', authenticate, allow('doctor', 'staff', 'admin'), asyncRoute(async (request, response) => {
   const pagination = getPagination(request, response);
   if (!pagination) return;
-  const filter = request.user.role === 'patient'
-    ? { patientId: request.user.id }
-    : request.user.role === 'doctor'
-      ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
-      : {};
+  const filter = request.user.role === 'doctor'
+    ? { patientId: { $in: await doctorPatientIds(request.user.id) } }
+    : {};
   await addPatientSearch(filter, pagination.q);
   const result = await listPage(Vital, filter, pagination, {
     sort: { createdAt: -1 },
@@ -1610,7 +1608,7 @@ app.put('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (requ
   response.json({ vital });
 }));
 
-app.delete('/api/vitals/:id', authenticate, allow('doctor'), asyncRoute(async (request, response) => {
+app.delete('/api/vitals/:id', authenticate, allow('admin'), asyncRoute(async (request, response) => {
   if (!validObjectId(request.params.id)) {
     response.status(400).json({ error: 'Invalid vital record ID.' });
     return;
