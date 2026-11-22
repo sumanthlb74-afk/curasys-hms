@@ -42,3 +42,19 @@ Verification: lint passed; 39 tests passed; 1 local Mongo integration test skipp
 ## Next stage
 
 Wait for GitHub Actions CI to run the Mongo integration workflow, then proceed to Stage 3: fixed medicine timing dropdown and prescription-linked billing line items.
+
+## Stage 3 — sign-in, receptionist intake, and nurse checks
+
+Status: implemented locally and pushed for CI verification.
+
+- Added the hospital sign-in role dropdown; the server compares the selected role and returns the same generic invalid-credentials response on mismatch. Patient login remains a hidden patient-role request on `/patient-login`.
+- Added shared appointment statuses and server-enforced transitions, with new appointments defaulting to `Booked`.
+- Receptionist queue now shows today’s appointments and selected patient age/UHID; free hourly slots use the existing clinic-hour conflict logic.
+- Nurse preliminary checks now select from today’s awaiting appointments, validate the appointment/patient pairing server-side, and move the appointment to `Vitals done` after saving.
+- Added tests for role mismatch, forbidden status transitions, nurse appointment checks, and automatic status movement; existing numeric and symptom validation remains active.
+
+Verification: lint passed; 39 tests passed; 1 local Mongo integration test skipped because `MONGODB_TEST_URI` is not set; build passed. No production database was used.
+
+## Next stage
+
+Wait for GitHub Actions CI, then implement Stage 4: fixed medicine timing (`whenToTake`) and prescription-linked billing line items.

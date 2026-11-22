@@ -27,5 +27,18 @@ export const preliminaryCheckSymptoms = Object.freeze([
   'Other',
 ]);
 export const paymentMethods = Object.freeze(['Cash', 'Card', 'UPI QR', 'Net Banking']);
+export const signInRoles = Object.freeze(['doctor', 'staff', 'receptionist', 'admin']);
+export const appointmentStatuses = Object.freeze(['Booked', 'Checked in', 'Vitals done', 'Consulted', 'Billed', 'Paid', 'Cancelled', 'Scheduled', 'Completed']);
+export const appointmentStatusTransitions = Object.freeze({
+  Booked: Object.freeze(['Checked in', 'Vitals done', 'Cancelled']),
+  'Checked in': Object.freeze(['Vitals done', 'Cancelled']),
+  'Vitals done': Object.freeze(['Consulted', 'Cancelled']),
+  Consulted: Object.freeze(['Billed', 'Cancelled']),
+  Billed: Object.freeze(['Paid']),
+  Paid: Object.freeze([]),
+  Cancelled: Object.freeze([]),
+  Scheduled: Object.freeze(['Checked in', 'Vitals done', 'Cancelled']),
+  Completed: Object.freeze([]),
+});
 export const defaultClinicStartHour = 0;
 export const defaultClinicEndHour = 24;

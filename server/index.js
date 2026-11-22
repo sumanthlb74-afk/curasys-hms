@@ -24,6 +24,8 @@ import { ensureUserIndexes } from './migrations/ensure-indexes.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from './validation.js';
 import {
   bloodGroups,
+  appointmentStatuses,
+  appointmentStatusTransitions,
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
@@ -38,7 +40,14 @@ import { isWithinClinicHours } from '../shared/clinic-hours.js';
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '.env') });
 
 const bedStatuses = ['Available', 'Occupied', 'Maintenance'];
-const appointmentStatuses = ['Scheduled', 'Completed', 'Cancelled'];
+const appointmentTransitionRoles = {
+  'Checked in': ['receptionist'],
+  'Vitals done': ['staff'],
+  Consulted: ['doctor'],
+  Billed: ['receptionist'],
+  Paid: ['receptionist'],
+  Cancelled: ['staff', 'receptionist'],
+};
 function configuredHour(name, fallback) {
   const value = process.env[name];
   if (value === undefined) return fallback;
@@ -472,6 +481,7 @@ app.post('/api/auth/register', registrationLimiter, asyncRoute(async (request, r
 
 app.post('/api/auth/login', authLimiter, asyncRoute(async (request, response) => {
   const { email, password } = request.body ?? {};
+  const selectedRole = request.body?.role;
   if (typeof email !== 'string' || email.length > 254 || typeof password !== 'string' || !password || Buffer.byteLength(password, 'utf8') > 72) {
     response.status(400).json({ error: 'Enter your email and password.' });
     return;
@@ -481,14 +491,14 @@ app.post('/api/auth/login', authLimiter, asyncRoute(async (request, response) =>
   const passwordMatches = user
     ? await user.verifyPassword(password)
     : await bcrypt.compare(password, '$2b$12$SnfE2ps00748FaTzgA3jAe/ST6CV08ai5sKmXhJKmr87TkTyn1YOe');
-  if (!user || user.isActive === false || !passwordMatches) {
+  if (!user || user.isActive === false || !passwordMatches || (selectedRole !== undefined && user.role !== selectedRole)) {
     await audit(request, {
       action: 'login.failed',
       entityType: 'auth',
       actorId: user?._id || null,
       actorRole: user?.role || 'anonymous',
     });
-    response.status(401).json({ error: 'Email or password is incorrect.' });
+    response.status(401).json({ error: 'Invalid email or password.' });
     return;
   }
   await audit(request, {
@@ -977,7 +987,7 @@ app.post('/api/appointments', authenticate, allow('staff', 'receptionist'), asyn
       doctorId,
       date: new Date(`${date}T00:00:00.000Z`),
       time,
-      status: 'Scheduled',
+      status: { $in: appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status)) },
     })) {
       response.status(409).json({ error: 'This doctor already has an appointment in that one-hour slot. Choose another time.' });
       return;
@@ -1039,6 +1049,13 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'recepti
     response.status(404).json({ error: 'Appointment not found.' });
     return;
   }
+  if (status !== undefined && status !== existingAppointment.status) {
+    const allowedTransitions = appointmentStatusTransitions[existingAppointment.status] || [];
+    if (!allowedTransitions.includes(status) || !appointmentTransitionRoles[status]?.includes(request.user.role)) {
+      response.status(409).json({ error: `Cannot move an appointment from ${existingAppointment.status} to ${status} for this role.` });
+      return;
+    }
+  }
   const nextDoctorId = update.doctorId === undefined ? existingAppointment.doctorId : update.doctorId;
   const nextStatus = update.status || existingAppointment.status;
   if (nextDoctorId) {
@@ -1057,7 +1074,7 @@ app.put('/api/appointments/:id', authenticate, allow('doctor', 'staff', 'recepti
     doctorId: nextDoctorId,
     date: existingAppointment.date,
     time: existingAppointment.time,
-    status: 'Scheduled',
+    status: { $in: appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status)) },
   })) {
     response.status(409).json({ error: 'This doctor already has an appointment in that one-hour slot.' });
     return;
@@ -1554,7 +1571,7 @@ app.get('/api/vitals', authenticate, allow('doctor', 'staff'), asyncRoute(async 
 
 app.post('/api/vitals', authenticate, allow('staff'), asyncRoute(async (request, response) => {
   const {
-    patientId, heartRate, systolic, diastolic, temperatureC, oxygenSaturation,
+    patientId, appointmentId, heartRate, systolic, diastolic, temperatureC, oxygenSaturation,
     heightCm, weightKg, symptoms, symptomOther, notes,
   } = request.body ?? {};
   const ranges = {
@@ -1574,6 +1591,20 @@ app.post('/api/vitals', authenticate, allow('staff'), asyncRoute(async (request,
   if (!validObjectId(patientId) || !await User.exists({ _id: patientId, role: 'patient', isActive: { $ne: false } })) {
     response.status(400).json({ error: 'Choose a valid patient.' });
     return;
+  }
+  let appointment = null;
+  if (appointmentId !== undefined) {
+    appointment = validObjectId(appointmentId)
+      ? await Appointment.findOne({ _id: appointmentId, patientId })
+      : null;
+    if (!appointment) {
+      response.status(400).json({ error: 'Choose a valid appointment for this patient.' });
+      return;
+    }
+    if (!(appointmentStatusTransitions[appointment.status] || []).includes('Vitals done')) {
+      response.status(409).json({ error: `This appointment is ${appointment.status} and is not awaiting a preliminary check.` });
+      return;
+    }
   }
   const values = { heartRate, systolic, diastolic, temperatureC, oxygenSaturation, heightCm, weightKg };
   const hasVital = Object.values(values).some((value) => value !== undefined && value !== null && value !== '');
@@ -1602,6 +1633,10 @@ app.post('/api/vitals', authenticate, allow('staff'), asyncRoute(async (request,
     notes: notes || '',
   });
   await audit(request, { action: 'vital.created', entityType: 'vital', entityId: vital._id, patientId });
+  if (appointment) {
+    appointment.status = 'Vitals done';
+    await appointment.save();
+  }
   response.status(201).json({ vital });
 }));
 

@@ -10,12 +10,14 @@ import api from './api.js';
 import AdminAccountsOnlyDashboard from './components/AdminAccountsOnlyDashboard.jsx';
 import {
   bloodGroups,
+  appointmentStatuses,
   defaultClinicEndHour,
   defaultClinicStartHour,
   departments,
   paymentMethods,
   preliminaryCheckSymptoms,
   prescriptionAdviceSuggestions,
+  signInRoles,
   triageLevels,
   wards,
 } from '../shared/constants.js';
@@ -45,6 +47,7 @@ const appointmentSlots = Array.from({ length: clinicEndHour - clinicStartHour },
   const endLabel = new Date(Date.UTC(2020, 0, 1, endHour)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
   return { time, label: `${startLabel} – ${endLabel} (${time}–${endTime})` };
 });
+const activeAppointmentStatuses = appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status));
 
 let apiWarmupPromise;
 let setupStatusPromise;
@@ -404,7 +407,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
   const [setupOpen, setSetupOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showWakeMessage, setShowWakeMessage] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirmPassword: '', phone: '', adminRegistrationKey: '', role: 'doctor' });
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   useEffect(() => {
     if (patientOnly) return;
@@ -429,7 +432,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
       const isRegister = mode === 'register';
       const payload = isRegister
         ? { name: form.name, email: form.email, password: form.password, phone: form.phone, adminRegistrationKey: form.adminRegistrationKey, role: 'admin' }
-        : { email: form.email, password: form.password };
+        : { email: form.email, password: form.password, role: patientOnly ? 'patient' : form.role };
       const { data } = await api.post(isRegister ? '/auth/register' : '/auth/login', payload);
       if (patientOnly && data.user.role !== 'patient') {
         notify('This sign-in page is for patients. Use the staff and administrator sign-in page for hospital accounts.', 'error');
@@ -458,6 +461,7 @@ function AuthPage({ onAuth, notify, patientOnly = false }) {
         <form onSubmit={submit} className="grid gap-4">
           {isRegister && <Field label="Full name"><Input value={form.name} onChange={change('name')} autoComplete="name" required maxLength={100} /></Field>}
           <Field label="Email"><Input type="email" value={form.email} onChange={change('email')} autoComplete="email" required /></Field>
+          {!patientOnly && !isRegister && <Field label="Sign in as"><Select value={form.role} onChange={change('role')}>{signInRoles.map((role) => <option key={role} value={role}>{role === 'staff' ? 'Medical Staff' : role[0].toUpperCase() + role.slice(1)}</option>)}</Select></Field>}
           <Field label="Password"><Input type="password" value={form.password} onChange={change('password')} autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={isRegister ? 8 : undefined} maxLength={72} required /></Field>
           {isRegister && <Field label="Confirm password"><Input type="password" value={form.confirmPassword} onChange={change('confirmPassword')} autoComplete="new-password" minLength={8} maxLength={72} required /></Field>}
           {isRegister && <Field label="Phone (optional)"><Input value={form.phone} onChange={change('phone')} autoComplete="tel" /></Field>}
@@ -1100,9 +1104,9 @@ function RecordEditDialog({ editor, notify, onClose, onSaved }) {
   );
 }
 
-function PreliminaryCheckForm({ patients, notify, onSaved }) {
+function PreliminaryCheckForm({ patients, appointments = [], notify, onSaved }) {
   const [form, setForm] = useState({
-    patientId: '',
+    patientId: '', appointmentId: '',
     heartRate: '',
     temperatureC: '',
     systolic: '',
@@ -1115,23 +1119,27 @@ function PreliminaryCheckForm({ patients, notify, onSaved }) {
     notes: '',
   });
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
   const change = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value }));
   const submit = async (event) => {
     event.preventDefault();
     if (saving) return;
     setSaving(true);
+    setError('');
     try {
       await api.post('/vitals', {
         ...form,
+        appointmentId: form.appointmentId,
         symptomOther: form.symptoms.includes('Other') ? form.symptomOther : '',
       });
       notify('Preliminary check recorded.');
       setForm({
-        patientId: '', heartRate: '', temperatureC: '', systolic: '', diastolic: '',
+        patientId: '', appointmentId: '', heartRate: '', temperatureC: '', systolic: '', diastolic: '',
         oxygenSaturation: '', heightCm: '', weightKg: '', symptoms: [], symptomOther: '', notes: '',
       });
       onSaved();
     } catch (error) {
+      setError(error.message);
       notify(error.message, 'error');
     } finally {
       setSaving(false);
@@ -1140,6 +1148,7 @@ function PreliminaryCheckForm({ patients, notify, onSaved }) {
   return (
     <Card title="Preliminary check" icon={Activity}>
       <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+        <Field label="Today appointment"><Select required value={form.appointmentId} onChange={(event) => { const selected = appointments.find((appointment) => appointment._id === event.target.value); setForm((value) => ({ ...value, appointmentId: event.target.value, patientId: selected?.patientId?._id || '' })); }}><option value="">Select an appointment</option>{appointments.map((appointment) => <option key={appointment._id} value={appointment._id}>{appointment.patientId?.name} · Age {calculateAge(appointment.patientId?.dateOfBirth) ?? '—'} · {appointment.patientId?.uhid} · {formatAppointmentSlot(appointment.time)}</option>)}</Select></Field>
         <Field label="Patient"><Select required value={form.patientId} onChange={change('patientId')}><option value="">Select a patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
         {[['heartRate', 'Heart rate (bpm)', '20', '300', '1'], ['temperatureC', 'Temperature (°C)', '25', '45', '0.1'], ['systolic', 'Systolic BP (mmHg)', '40', '300', '1'], ['diastolic', 'Diastolic BP (mmHg)', '20', '200', '1'], ['oxygenSaturation', 'SpO₂ (%)', '1', '100', '1'], ['heightCm', 'Height (cm)', '30', '250', '0.1'], ['weightKg', 'Weight (kg)', '1', '500', '0.1']].map(([key, label, min, max, step]) => <Field key={key} label={label}><Input type="number" min={min} max={max} step={step} value={form[key]} onChange={change(key)} /></Field>)}
         <fieldset className="grid gap-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700 sm:col-span-2">
@@ -1153,6 +1162,7 @@ function PreliminaryCheckForm({ patients, notify, onSaved }) {
           {form.symptoms.includes('Other') && <Field label="Describe other symptom (max 200 characters)"><Input maxLength="200" value={form.symptomOther} onChange={change('symptomOther')} required /></Field>}
         </fieldset>
         <Field label="Note (max 1000 characters)"><Textarea rows="3" maxLength="1000" value={form.notes} onChange={change('notes')} /></Field>
+        {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300 sm:col-span-2">{error}</p>}
         <button disabled={saving || !patients.length} className="self-end rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save preliminary check'}</button>
       </form>
     </Card>
@@ -1244,7 +1254,7 @@ function StaffDashboard({ notify }) {
       <PaginationControls page={data.patients?.page || patientPage} total={data.patients?.total || 0} limit={50} onPageChange={setPatientPage} />
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <PatientPasswordReset patients={patients} notify={notify} onReset={refresh} />
-      <PreliminaryCheckForm patients={patients} notify={notify} onSaved={refresh} />
+      <PreliminaryCheckForm patients={patients} appointments={appointments.filter((appointment) => appointment.date?.slice(0, 10) === localDateValue() && ['Booked', 'Scheduled', 'Checked in'].includes(appointment.status))} notify={notify} onSaved={refresh} />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Book an appointment" icon={CalendarDays}>
           <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
@@ -1258,7 +1268,7 @@ function StaffDashboard({ notify }) {
                 appointment.doctorId?._id === appointmentForm.doctorId
                 && appointment.date.slice(0, 10) === appointmentForm.date
                 && appointment.time === slot.time
-                && appointment.status === 'Scheduled'
+                && activeAppointmentStatuses.includes(appointment.status)
               )));
               return <option key={slot.time} value={slot.time} disabled={isBooked}>{isBooked ? `${slot.label} · booked` : slot.label}</option>;
             })}</Select><span className="text-xs font-normal text-slate-500">{appointmentForm.doctorId && appointmentForm.date ? 'Booked slots for this doctor and date are disabled.' : 'Select a doctor and date to check for existing bookings.'}</span></Field>
@@ -1294,6 +1304,7 @@ function ReceptionistDashboard({ notify }) {
   const error = fixedLoad.error || patientLoad.error;
   const appointments = data.appointments?.appointments || [];
   const patients = data.patients?.patients || [];
+  const todaysAppointments = appointments.filter((appointment) => appointment.date?.slice(0, 10) === localDateValue());
   const doctors = data.doctors?.doctors || [];
   const bills = data.billing?.bills || [];
   const refreshFixed = fixedLoad.refresh;
@@ -1394,16 +1405,6 @@ function ReceptionistDashboard({ notify }) {
       setSavingPayment(false);
     }
   };
-  const updateAppointment = async (id, values) => {
-    try {
-      await api.put(`/appointments/${id}`, values);
-      notify('Appointment updated.');
-      refreshFixed();
-    } catch (requestError) {
-      notify(requestError.message, 'error');
-    }
-  };
-
   return (
     <main className="mx-auto grid max-w-7xl gap-6 px-4 py-8 sm:px-6">
       <PageTitle eyebrow="Receptionist workspace" title="Patient services and billing" description="Register patients, book appointments, view doctor reports, and record simulated payments." icon={Receipt} />
@@ -1412,6 +1413,7 @@ function ReceptionistDashboard({ notify }) {
       <PatientRegistrationForm notify={notify} onCreated={refresh} />
       <Card title="Book an appointment" icon={CalendarDays}>
         <form onSubmit={bookAppointment} className="grid gap-3 sm:grid-cols-2">
+          {patients.find((patient) => patient._id === appointmentForm.patientId) && <p className="text-xs text-slate-500 sm:col-span-2">Selected patient: {patients.find((patient) => patient._id === appointmentForm.patientId).name} · Age {calculateAge(patients.find((patient) => patient._id === appointmentForm.patientId).dateOfBirth) ?? 'not recorded'} · {patients.find((patient) => patient._id === appointmentForm.patientId).uhid}</p>}
           <Field label="Patient"><Select required value={appointmentForm.patientId} onChange={change(setAppointmentForm, 'patientId')}><option value="">Select patient</option>{patients.map((patient) => <option key={patient._id} value={patient._id}>{patient.name} · {patient.uhid}</option>)}</Select></Field>
           <Field label="Department"><Select value={appointmentForm.department} onChange={(event) => setAppointmentForm((value) => ({ ...value, department: event.target.value, doctorId: '' }))}>{departments.map((department) => <option key={department}>{department}</option>)}</Select></Field>
           <Field label="Doctor"><Select value={appointmentForm.doctorId} onChange={change(setAppointmentForm, 'doctorId')}><option value="">Assign later</option>{doctors.filter((doctor) => doctor.specialization === appointmentForm.department).map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.name}</option>)}</Select></Field>
@@ -1422,7 +1424,7 @@ function ReceptionistDashboard({ notify }) {
               appointment.doctorId?._id === appointmentForm.doctorId
               && appointment.date.slice(0, 10) === appointmentForm.date
               && appointment.time === slot.time
-              && appointment.status === 'Scheduled'
+                && activeAppointmentStatuses.includes(appointment.status)
             )));
             return <option key={slot.time} value={slot.time} disabled={isBooked}>{isBooked ? `${slot.label} · booked` : slot.label}</option>;
           })}</Select></Field>
@@ -1472,8 +1474,8 @@ function ReceptionistDashboard({ notify }) {
           {bill.status === 'Unpaid' && <button type="button" className="mt-3 rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white" onClick={() => { setPayingBill(bill); setPaymentForm({ paymentMethod: 'Cash', paymentReference: '' }); }}>Record payment</button>}
         </article>)}</div>}
       </Card>
-      <Card title={`Appointment queue · ${appointments.length}`} icon={CalendarDays}>
-        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : appointments.length === 0 ? <Empty>No appointments have been booked.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{appointments.map((item) => <tr key={item._id}><td className="py-3">{item.patientId?.name}</td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td>{item.doctorId?.name || 'Unassigned'}</td><td><Select aria-label={`Appointment status for ${item.patientId?.name || 'patient'}`} className="w-auto" value={item.status} onChange={(event) => updateAppointment(item._id, { status: event.target.value })}>{['Scheduled', 'Completed', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</Select></td></tr>)}</tbody></table></div>}
+      <Card title={`Today's appointment queue · ${todaysAppointments.length}`} icon={CalendarDays}>
+        {loading || error ? <LoadState loading={loading} error={error} onRetry={refresh} /> : todaysAppointments.length === 0 ? <Empty>No appointments are booked for today.</Empty> : <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr><th className="pb-3">Patient</th><th className="pb-3">Visit</th><th className="pb-3">Doctor</th><th className="pb-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{todaysAppointments.map((item) => <tr key={item._id}><td className="py-3">{item.patientId?.name}<span className="block text-xs text-slate-500">Age {calculateAge(item.patientId?.dateOfBirth) ?? '—'} · {item.patientId?.uhid}</span></td><td>{item.department}<p className="text-xs text-slate-500">{formatAppointmentDate(item.date)} · {formatAppointmentSlot(item.time)}</p></td><td>{item.doctorId?.name || 'Unassigned'}</td><td>{item.status}</td></tr>)}</tbody></table></div>}
       </Card>
       {payingBill && createPortal(
         <div role="dialog" aria-modal="true" aria-labelledby="payment-title" className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-3 sm:p-4">

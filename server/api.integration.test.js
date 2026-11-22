@@ -92,8 +92,8 @@ async function api(path, { method = 'GET', token, body, sourceIp } = {}) {
   return { status: response.status, body: await response.json() };
 }
 
-async function login(email, password) {
-  return api('/api/auth/login', { method: 'POST', body: { email, password } });
+async function login(email, password, role) {
+  return api('/api/auth/login', { method: 'POST', body: { email, password, ...(role ? { role } : {}) } });
 }
 
 async function registerPatient(token, name, email) {
@@ -355,6 +355,8 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
   const doctorLogin = await login('doctor@example.test', 'DoctorPassword1!');
   assert.equal(doctorLogin.status, 200);
   assert.equal(doctorLogin.body.user.mustChangePassword, true);
+  assert.equal((await login('doctor@example.test', 'DoctorPassword1!', 'receptionist')).status, 401);
+  assert.equal((await login('doctor@example.test', 'DoctorPassword1!', 'doctor')).status, 200);
   for (let attempt = 0; attempt < 6; attempt += 1) {
     assert.equal((await login('doctor@example.test', 'DoctorPassword1!')).status, 200);
   }
@@ -646,6 +648,36 @@ test('isolated MongoDB API workflows enforce roles, ownership, and unique indexe
     },
   });
   assert.equal(receptionistAppointment.status, 201);
+  const checkedIn = await api(`/api/appointments/${receptionistAppointment.body.appointment._id}`, {
+    method: 'PUT',
+    token: receptionistToken,
+    body: { status: 'Checked in' },
+  });
+  assert.equal(checkedIn.status, 200);
+  assert.equal(checkedIn.body.appointment.status, 'Checked in');
+  assert.equal((await api(`/api/appointments/${receptionistAppointment.body.appointment._id}`, {
+    method: 'PUT',
+    token: staffToken,
+    body: { status: 'Consulted' },
+  })).status, 409);
+  const nurseAppointmentCheck = await api('/api/vitals', {
+    method: 'POST',
+    token: staffToken,
+    body: {
+      appointmentId: receptionistAppointment.body.appointment._id,
+      patientId: receptionistPatient.body.patient.id,
+      heartRate: 74,
+      temperatureC: 36.8,
+      systolic: 118,
+      diastolic: 78,
+      oxygenSaturation: 99,
+      symptoms: ['Headache and body ache'],
+      notes: 'Preliminary check for today queue.',
+    },
+  });
+  assert.equal(nurseAppointmentCheck.status, 201);
+  const appointmentAfterCheck = await api('/api/appointments', { token: staffToken });
+  assert.equal(appointmentAfterCheck.body.appointments.find(({ _id }) => _id === receptionistAppointment.body.appointment._id).status, 'Vitals done');
   assert.equal((await api('/api/appointments/not-an-id', {
     method: 'PUT',
     token: staffToken,

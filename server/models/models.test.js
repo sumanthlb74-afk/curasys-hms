@@ -11,6 +11,7 @@ import Vital from './Vital.js';
 import { isOptionalAddress, isOptionalPhone, isOptionalString } from '../validation.js';
 import {
   bloodGroups,
+  appointmentStatuses,
   departments,
   paymentMethods,
   preliminaryCheckSymptoms,
@@ -178,7 +179,7 @@ test('scheduled appointments have a unique doctor and time-slot index', () => {
   ));
   assert.ok(slotIndex);
   assert.deepEqual(slotIndex[1].partialFilterExpression, {
-    status: 'Scheduled',
+    status: { $in: appointmentStatuses.filter((status) => !['Cancelled', 'Completed'].includes(status)) },
     doctorId: { $type: 'objectId' },
   });
 });
